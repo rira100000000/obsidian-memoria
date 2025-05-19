@@ -5,7 +5,7 @@ import { GeminiPluginSettings } from '../settings'; // settings.ts のパスも�
 
 // LangChain.jsからのインポート
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
+import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages"; // SystemMessage もインポート
 import { ChatMessageHistory } from "langchain/stores/message/in_memory";
 import { RunnableWithMessageHistory } from "@langchain/core/runnables";
 import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
@@ -21,17 +21,21 @@ export class ChatView extends ItemView {
   private messageHistory = new ChatMessageHistory();
   private chatModel: ChatGoogleGenerativeAI | null = null;
   private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
-  private promptTemplate: ChatPromptTemplate | null = null;
+  // private promptTemplate: ChatPromptTemplate | null = null; // promptTemplateはinitializeChatModel内でローカルに扱う
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianMemoria) {
     super(leaf);
     this.plugin = plugin;
     this.settings = plugin.settings;
-    this.initializeChatModel();
+    this.initializeChatModel(); // コンストラクタで初期化
   }
 
   private initializeChatModel() {
-    this.promptTemplate = null;
+    // this.promptTemplate = null; // ローカル変数として扱うため、クラスプロパティからは削除
+
+    // 設定を最新の状態に更新
+    this.settings = this.plugin.settings;
+    const systemPromptFromSettings = this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian."; // 設定からシステムプロンプトを取得、なければデフォルト
 
     if (this.settings.geminiApiKey && this.settings.geminiModel) {
       try {
@@ -41,43 +45,45 @@ export class ChatView extends ItemView {
         });
 
         // プロンプトテンプレートの定義
+        // SystemMessageの内容を設定から読み込んだものに置き換える
         const prompt = ChatPromptTemplate.fromMessages([
-          ["system", "You are a helpful assistant integrated into Obsidian."],
+          new SystemMessage(systemPromptFromSettings), // 設定されたシステムプロンプトを使用
           new MessagesPlaceholder("history"),
           ["human", "{input}"], // ユーザー入力を埋め込む
         ]);
-        this.promptTemplate = prompt;
+        // this.promptTemplate = prompt; // ローカル変数として扱う
 
         // プロンプトとモデルを結合したチェーン
-        const chain = this.promptTemplate.pipe(this.chatModel);
+        const chain = prompt.pipe(this.chatModel);
 
         // RunnableWithMessageHistory を初期化
         this.chainWithHistory = new RunnableWithMessageHistory({
             runnable: chain,
-            getMessageHistory: (_sessionId) => this.messageHistory, // セッションIDごとに履歴を管理する場合は適宜変更
+            getMessageHistory: (_sessionId) => this.messageHistory,
             inputMessagesKey: "input",
             historyMessagesKey: "history",
         });
-        // console.log('[MemoriaChat] ChatGoogleGenerativeAI model and chain with history initialized successfully.');
+        console.log('[MemoriaChat] ChatGoogleGenerativeAI model and chain with history initialized successfully with system prompt:', systemPromptFromSettings);
       } catch (error: any) {
         console.error('[MemoriaChat] Failed to initialize ChatGoogleGenerativeAI model or chain:', error.message);
         new Notice('Geminiモデルまたはチャットチェーンの初期化に失敗しました。');
         this.chatModel = null;
         this.chainWithHistory = null;
-        this.promptTemplate = null;
+        // this.promptTemplate = null;
       }
     } else {
-      // console.log('[MemoriaChat] API key or model name not set. Chat model not initialized.');
+      console.log('[MemoriaChat] API key or model name not set. Chat model not initialized.');
       this.chatModel = null;
       this.chainWithHistory = null;
-      this.promptTemplate = null;
+      // this.promptTemplate = null;
     }
   }
 
+  // 設定が変更されたときに呼び出されるメソッド
   onSettingsChanged() {
-    this.settings = this.plugin.settings;
-    this.initializeChatModel();
-    // console.log('[MemoriaChat] Settings changed, chat model re-initialized.');
+    // this.settings = this.plugin.settings; // initializeChatModel内で最新の設定を取得するため、ここでは不要
+    this.initializeChatModel(); // 設定が変更されたらチャットモデルを再初期化
+    console.log('[MemoriaChat] Settings changed, chat model re-initialized.');
   }
 
   getViewType() {
@@ -93,6 +99,10 @@ export class ChatView extends ItemView {
   }
 
   async onOpen() {
+    // onOpen時にも最新の設定で初期化を試みる（特に初回起動時など）
+    this.settings = this.plugin.settings; // 最新の設定を読み込み
+    this.initializeChatModel(); // チャットモデルを初期化
+
     const container = this.containerEl.children[1];
     container.empty();
     container.addClass('memoria-chat-view-container');
@@ -132,17 +142,19 @@ export class ChatView extends ItemView {
       cls: 'memoria-chat-input-textarea'
     });
 
+    // 入力に応じてテキストエリアの高さを自動調整
     this.inputEl.addEventListener('input', () => {
-        this.inputEl.style.height = 'auto';
-        this.inputEl.style.height = `${this.inputEl.scrollHeight}px`;
+        this.inputEl.style.height = 'auto'; // 一旦高さをリセット
+        this.inputEl.style.height = `${this.inputEl.scrollHeight}px`; // スクロールハイトに合わせて高さを設定
     });
 
     this.inputEl.addEventListener('keydown', (event: KeyboardEvent) => {
       if (event.key === 'Enter') {
-        if (event.shiftKey) {
+        if (event.shiftKey) { // Shift + Enter の場合のみ送信
           event.preventDefault(); // 通常のEnterでの改行を防ぐ
           this.sendMessage();
         }
+        // Shiftキーが押されていないEnterの場合は、テキストエリア内で改行される (デフォルト動作)
       }
     });
 
@@ -153,12 +165,11 @@ export class ChatView extends ItemView {
       cls: 'mod-cta memoria-chat-send-button'
     });
 
-    // 初期化チェック
+    // 初期化チェック (onOpen時にも行うことで、プラグインロード後の最初のビュー表示で確実にチェック)
     if (!this.chainWithHistory) {
-        this.initializeChatModel();
-        if(!this.chainWithHistory){
-            new Notice('Geminiチャット機能が利用できません。設定を確認してください。', 0);
-        }
+        // initializeChatModelは既にonOpenの冒頭で呼ばれているので、ここでは再呼び出しせず、
+        // それでも初期化されていなければ通知を出す
+        new Notice('Geminiチャット機能が利用できません。設定（APIキー、モデル名）を確認してください。', 0); // 0で通知が消えないようにする
     }
   }
 
@@ -196,81 +207,56 @@ export class ChatView extends ItemView {
     const rawMessageContent = this.inputEl.value;
     const trimmedMessageContent = rawMessageContent.trim();
 
-    // console.log(`[MemoriaChat] sendMessage called. Raw input: "${rawMessageContent}", Trimmed input: "${trimmedMessageContent}"`);
-
     if (!trimmedMessageContent) {
       if (rawMessageContent.length > 0) {
         new Notice("メッセージが空白です。送信は行いません。");
-        // console.log('[MemoriaChat] Message is whitespace only. Aborting send.');
-      } else {
-        //  console.log('[MemoriaChat] Message is empty. Aborting send.');
       }
-      this.inputEl.value = '';
-      this.inputEl.style.height = 'auto';
+      this.inputEl.value = ''; // 空白のみでも入力欄はクリア
+      this.inputEl.style.height = 'auto'; // 高さをリセット
       this.inputEl.focus();
       return;
     }
 
     this.appendUserMessage(trimmedMessageContent);
     this.inputEl.value = '';
-    this.inputEl.style.height = 'auto';
+    this.inputEl.style.height = 'auto'; // 送信後も高さをリセット
     this.inputEl.focus();
 
-    if (!this.chainWithHistory || !this.promptTemplate) {
-      this.appendModelMessage('エラー: チャットチェーンまたはプロンプトが初期化されていません。プラグイン設定を確認してください。');
-      new Notice('チャット機能が利用できません。APIキーとモデル名を設定してください。');
+    // sendMessageが呼ばれる前にinitializeChatModelが呼ばれていることを期待。
+    // chainWithHistoryがなければ、エラーメッセージを表示して処理を中断。
+    if (!this.chainWithHistory) { // promptTemplateのチェックは不要（chainWithHistoryが作られていればpromptもあるはず）
+      this.appendModelMessage('エラー: チャットチェーンが初期化されていません。プラグイン設定（APIキー、モデル名）を確認してください。');
+      new Notice('チャット機能が利用できません。APIキーとモデル名を設定し、ビューを再読み込みするか、Obsidianを再起動してみてください。');
+      // 再度初期化を試みる (ユーザーが設定を変更した直後の場合など)
       this.initializeChatModel();
-      if(!this.chainWithHistory || !this.promptTemplate) return;
+      if(!this.chainWithHistory) return; // それでもダメなら中断
     }
 
     const loadingMessageEl = this.appendMessage('応答を待っています...', 'loading');
 
     try {
-      // console.log('[MemoriaChat] Sending to LangChain chain:', { input: trimmedMessageContent });
-      // const historyBeforeInvoke = await this.messageHistory.getMessages();
-      // console.log('[MemoriaChat] Current message history (before invoke):', JSON.stringify(historyBeforeInvoke.map(m => ({type: m._getType(), content: m.content})), null, 2));
-
-      // デバッグ用の詳細なログは削除またはコメントアウト
-      // console.log('[MemoriaChat] DEBUG: About to check this.promptTemplate.');
-      // if (this.promptTemplate) {
-      //   console.log('[MemoriaChat] DEBUG: this.promptTemplate exists. Type:', typeof this.promptTemplate, 'Instance of ChatPromptTemplate:', this.promptTemplate instanceof ChatPromptTemplate);
-      //   try {
-      //     console.log('[MemoriaChat] DEBUG: Attempting to call this.promptTemplate.formatMessages().');
-      //     const formattedMessagesForDebug = await this.promptTemplate.formatMessages({
-      //       input: trimmedMessageContent,
-      //       history: historyBeforeInvoke
-      //     });
-      //     console.log('[MemoriaChat] Manually formatted messages (for debug before invoke):', JSON.stringify(formattedMessagesForDebug.map(m => ({type: m._getType(), content: m.content})), null, 2));
-      //   } catch (e: any) {
-      //     console.error('[MemoriaChat] Error formatting messages for debug:', e.message, e.stack, e);
-      //   }
-      // } else {
-      //   console.log('[MemoriaChat] DEBUG: this.promptTemplate is NULL or UNDEFINED.');
-      // }
-      // console.log('[MemoriaChat] DEBUG: Finished checking this.promptTemplate.');
-
-
+      // LangChainのチェーンを呼び出し
       const response = await this.chainWithHistory.invoke(
-        { input: trimmedMessageContent },
-        { configurable: { sessionId: "obsidian-memoria-session" } } // sessionId は固定で良いか、動的にするか検討
+        { input: trimmedMessageContent }, // ChatPromptTemplateで定義した "input" キーにユーザーメッセージを渡す
+        { configurable: { sessionId: "obsidian-memoria-session" } } // sessionId は固定または動的に設定
       );
 
-      // const historyAfterInvoke = await this.messageHistory.getMessages();
-      // console.log('[MemoriaChat] Current message history (after invoke):', JSON.stringify(historyAfterInvoke.map(m => ({type: m._getType(), content: m.content})), null, 2));
-      // console.log('[MemoriaChat] Received response from LangChain chain:', response);
+      loadingMessageEl.remove(); // ローディングメッセージを削除
 
-      loadingMessageEl.remove();
+      // 応答の処理 (LangChainからの応答形式に合わせて調整が必要な場合がある)
       if (response && typeof response.content === 'string') {
         this.appendModelMessage(response.content);
-      } else if (response && Array.isArray(response.content) && response.content.length > 0 && typeof response.content[0] === 'object' && 'text' in response.content[0]) {
+      } else if (response && Array.isArray(response.content) && response.content.length > 0 && typeof response.content[0] === 'object' && response.content[0] !== null && 'text' in response.content[0]) {
+        // 一部のモデルや設定では、contentがオブジェクトの配列で返ってくることがあるため対応
         this.appendModelMessage((response.content[0] as any).text);
-      } else {
+      }
+      else {
         console.error('[MemoriaChat] Invalid or unexpected response format from LangChain chain:', response);
-        this.appendModelMessage('エラー: 予期しない形式の応答がありました。');
+        this.appendModelMessage('エラー: 予期しない形式の応答がありました。コンソールログを確認してください。');
       }
 
     } catch (error: any) {
-      console.error('[MemoriaChat] Error sending message via LangChain:', error.message); // スタックトレースは開発時には有用だが、本番ではメッセージのみでも可
+      console.error('[MemoriaChat] Error sending message via LangChain:', error.message, error.stack); // エラー時にはスタックトレースも出力
       loadingMessageEl.remove();
       let errorMessage = 'エラー: メッセージの送信中に問題が発生しました。';
       if (error.message) {
