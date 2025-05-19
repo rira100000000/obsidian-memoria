@@ -1,7 +1,14 @@
 // src/ui/chatWindow.ts
-import { ItemView, WorkspaceLeaf, App, Notice, Platform } from 'obsidian';
-import ObsidianMemoria from '../../main';
-import { GeminiPluginSettings } from '../settings';
+import { ItemView, WorkspaceLeaf, Notice } from 'obsidian';
+import ObsidianMemoria from '../../main'; // main.ts のパスはプロジェクト構成に合わせてください
+import { GeminiPluginSettings } from '../settings'; // settings.ts のパスも同様
+
+// LangChain.jsからのインポート
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
+import { ChatMessageHistory } from "langchain/stores/message/in_memory";
+import { RunnableWithMessageHistory } from "@langchain/core/runnables";
+import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
@@ -11,10 +18,66 @@ export class ChatView extends ItemView {
   chatMessagesEl: HTMLElement;
   inputEl: HTMLTextAreaElement;
 
+  private messageHistory = new ChatMessageHistory();
+  private chatModel: ChatGoogleGenerativeAI | null = null;
+  private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
+  private promptTemplate: ChatPromptTemplate | null = null;
+
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianMemoria) {
     super(leaf);
     this.plugin = plugin;
     this.settings = plugin.settings;
+    this.initializeChatModel();
+  }
+
+  private initializeChatModel() {
+    this.promptTemplate = null;
+
+    if (this.settings.geminiApiKey && this.settings.geminiModel) {
+      try {
+        this.chatModel = new ChatGoogleGenerativeAI({
+          apiKey: this.settings.geminiApiKey,
+          model: this.settings.geminiModel,
+        });
+
+        // プロンプトテンプレートの定義
+        const prompt = ChatPromptTemplate.fromMessages([
+          ["system", "You are a helpful assistant integrated into Obsidian."],
+          new MessagesPlaceholder("history"),
+          ["human", "{input}"], // ユーザー入力を埋め込む
+        ]);
+        this.promptTemplate = prompt;
+
+        // プロンプトとモデルを結合したチェーン
+        const chain = this.promptTemplate.pipe(this.chatModel);
+
+        // RunnableWithMessageHistory を初期化
+        this.chainWithHistory = new RunnableWithMessageHistory({
+            runnable: chain,
+            getMessageHistory: (_sessionId) => this.messageHistory, // セッションIDごとに履歴を管理する場合は適宜変更
+            inputMessagesKey: "input",
+            historyMessagesKey: "history",
+        });
+        // console.log('[MemoriaChat] ChatGoogleGenerativeAI model and chain with history initialized successfully.');
+      } catch (error: any) {
+        console.error('[MemoriaChat] Failed to initialize ChatGoogleGenerativeAI model or chain:', error.message);
+        new Notice('Geminiモデルまたはチャットチェーンの初期化に失敗しました。');
+        this.chatModel = null;
+        this.chainWithHistory = null;
+        this.promptTemplate = null;
+      }
+    } else {
+      // console.log('[MemoriaChat] API key or model name not set. Chat model not initialized.');
+      this.chatModel = null;
+      this.chainWithHistory = null;
+      this.promptTemplate = null;
+    }
+  }
+
+  onSettingsChanged() {
+    this.settings = this.plugin.settings;
+    this.initializeChatModel();
+    // console.log('[MemoriaChat] Settings changed, chat model re-initialized.');
   }
 
   getViewType() {
@@ -26,7 +89,7 @@ export class ChatView extends ItemView {
   }
 
   getIcon() {
-    return 'messages-square';
+    return 'messages-square'; // Obsidianのアイコン名
   }
 
   async onOpen() {
@@ -34,79 +97,73 @@ export class ChatView extends ItemView {
     container.empty();
     container.addClass('memoria-chat-view-container');
 
+    // スタイル設定
     const styleEl = container.createEl('style');
     styleEl.textContent = `
       .memoria-chat-view-container { display: flex; flex-direction: column; height: 100%; }
       .memoria-chat-messages-wrapper { flex-grow: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; }
+      .memoria-chat-messages-inner { display: flex; flex-direction: column; }
       .memoria-chat-message { margin-bottom: 8px; padding: 8px 12px; border-radius: 12px; max-width: 85%; width: fit-content; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
       .user-message { background-color: var(--interactive-accent); color: var(--text-on-accent); align-self: flex-end; }
       .model-message { background-color: var(--background-secondary); align-self: flex-start; }
-      .model-message.loading { color: var(--text-muted); }
-      .memoria-chat-input-form { display: flex; padding: 10px; border-top: 1px solid var(--background-modifier-border); background-color: var(--background-primary); flex-shrink: 0; }
-      .memoria-chat-input-textarea { flex-grow: 1; margin-right: 8px; resize: none; font-family: inherit; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); padding: 8px; min-height: 40px; }
+      .model-message.loading { color: var(--text-muted); font-style: italic; }
+      .memoria-chat-input-form { display: flex; padding: 10px; border-top: 1px solid var(--background-modifier-border); background-color: var(--background-primary); flex-shrink: 0; align-items: flex-end; }
+      .memoria-chat-input-textarea { flex-grow: 1; margin-right: 8px; resize: none; font-family: inherit; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); padding: 8px; min-height: 40px; max-height: 200px; overflow-y: auto; }
       .memoria-chat-send-button { align-self: flex-end; min-height: 40px; }
     `;
 
+    // メッセージ表示エリア
     const messagesWrapperEl = container.createEl('div', { cls: 'memoria-chat-messages-wrapper' });
     this.chatMessagesEl = messagesWrapperEl.createEl('div', { cls: 'memoria-chat-messages-inner' });
-    this.appendModelMessage('チャットウィンドウへようこそ！');
+    this.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');
 
+    // 入力フォーム
     const inputFormEl = container.createEl('form', { cls: 'memoria-chat-input-form' });
     inputFormEl.addEventListener('submit', (event) => {
       event.preventDefault();
-      console.log('[MemoriaChat] Form submitted by button or direct form submit.');
       this.sendMessage();
     });
 
     this.inputEl = inputFormEl.createEl('textarea', {
       attr: {
-        placeholder: 'メッセージを入力 (Shift+Enterで送信)', // プレースホルダーを変更
-        rows: 2,
+        placeholder: 'メッセージを入力 (Shift+Enterで送信)',
+        rows: 1,
       },
       cls: 'memoria-chat-input-textarea'
     });
 
-    // Keydown listener
+    this.inputEl.addEventListener('input', () => {
+        this.inputEl.style.height = 'auto';
+        this.inputEl.style.height = `${this.inputEl.scrollHeight}px`;
+    });
+
     this.inputEl.addEventListener('keydown', (event: KeyboardEvent) => {
-      console.log(`[MemoriaChat] Keydown: key="${event.key}", code="${event.code}", ctrlKey=${event.ctrlKey}, shiftKey=${event.shiftKey}, metaKey=${event.metaKey}, altKey=${event.altKey}`);
-
-      const ctrlOrCmdPressed = Platform.isMacOS ? event.metaKey : event.ctrlKey;
-
       if (event.key === 'Enter') {
-        console.log(`[MemoriaChat] Enter key pressed (keydown event). ctrlOrCmdPressed=${ctrlOrCmdPressed}, shiftKey=${event.shiftKey}`);
-
-        // 1. Shift + Enter (Ctrl/Cmdキーの状態は問わない) -> 送信処理
         if (event.shiftKey) {
-          console.log('[MemoriaChat] Condition Met: Shift + Enter. Attempting to send message.');
-          event.preventDefault(); // デフォルトのEnterキーの動作（改行）をキャンセル
+          event.preventDefault(); // 通常のEnterでの改行を防ぐ
           this.sendMessage();
         }
-        // 2. Enterキーのみ、または Ctrl/Cmd + Enter -> 改行 (デフォルト動作に任せる)
-        // (上記以外のEnterキー関連の組み合わせ)
-        else {
-          console.log('[MemoriaChat] Condition Met: Enter (possibly with Ctrl/Cmd, but no Shift). Allowing default newline behavior.');
-          // event.preventDefault() は呼び出さないので、テキストエリアは通常通り改行する
-        }
       }
     });
 
-    // Keyup listener (デバッグ用)
-    this.inputEl.addEventListener('keyup', (event: KeyboardEvent) => {
-      if (event.key === "Control" || event.key === "Meta" || event.key === "Shift") {
-        console.log(`[MemoriaChat] Keyup: Modifier key released - key="${event.key}", code="${event.code}"`);
-      }
-    });
-
-
-    const sendButtonEl = inputFormEl.createEl('button', {
+    // 送信ボタン
+    inputFormEl.createEl('button', {
       text: '送信',
       type: 'submit',
       cls: 'mod-cta memoria-chat-send-button'
     });
+
+    // 初期化チェック
+    if (!this.chainWithHistory) {
+        this.initializeChatModel();
+        if(!this.chainWithHistory){
+            new Notice('Geminiチャット機能が利用できません。設定を確認してください。', 0);
+        }
+    }
   }
 
   async onClose() {
-    // クリーンアップ処理
+    // クリーンアップ処理 (もしあれば)
   }
 
   private appendMessage(message: string, type: 'user' | 'model' | 'loading') {
@@ -126,7 +183,6 @@ export class ChatView extends ItemView {
     this.appendMessage(message, 'model');
   }
 
-
   scrollToBottom() {
     const wrapper = this.chatMessagesEl.parentElement;
     if (wrapper) {
@@ -137,48 +193,91 @@ export class ChatView extends ItemView {
   }
 
   async sendMessage() {
-    console.log('[MemoriaChat] sendMessage function called.');
-    const message = this.inputEl.value;
-    console.log(`[MemoriaChat] Message content before trim: "${message}"`);
+    const rawMessageContent = this.inputEl.value;
+    const trimmedMessageContent = rawMessageContent.trim();
 
-    const trimmedMessage = message.trim();
-    console.log(`[MemoriaChat] Message content after trim: "${trimmedMessage}"`);
+    // console.log(`[MemoriaChat] sendMessage called. Raw input: "${rawMessageContent}", Trimmed input: "${trimmedMessageContent}"`);
 
-    if (!trimmedMessage) {
-        if (message.length > 0) {
-            new Notice("メッセージが空白です。送信は行いません。");
-            console.log('[MemoriaChat] Message is whitespace only. Aborting send.');
-        } else {
-            console.log('[MemoriaChat] Message is empty. Aborting send.');
-        }
-        return;
-    }
-
-    this.appendUserMessage(trimmedMessage);
-    this.inputEl.value = '';
-    this.inputEl.focus();
-
-    if (!this.settings.geminiApiKey || !this.settings.geminiModel) {
-      new Notice('Gemini APIキーまたはモデルが設定されていません。プラグイン設定を確認してください。');
-      this.appendModelMessage('エラー: APIキーまたはモデルが未設定です。');
-      console.log('[MemoriaChat] API key or model not set. Aborting API call.');
+    if (!trimmedMessageContent) {
+      if (rawMessageContent.length > 0) {
+        new Notice("メッセージが空白です。送信は行いません。");
+        // console.log('[MemoriaChat] Message is whitespace only. Aborting send.');
+      } else {
+        //  console.log('[MemoriaChat] Message is empty. Aborting send.');
+      }
+      this.inputEl.value = '';
+      this.inputEl.style.height = 'auto';
+      this.inputEl.focus();
       return;
     }
 
-    console.log('[MemoriaChat] Preparing to call API (dummy call).');
+    this.appendUserMessage(trimmedMessageContent);
+    this.inputEl.value = '';
+    this.inputEl.style.height = 'auto';
+    this.inputEl.focus();
+
+    if (!this.chainWithHistory || !this.promptTemplate) {
+      this.appendModelMessage('エラー: チャットチェーンまたはプロンプトが初期化されていません。プラグイン設定を確認してください。');
+      new Notice('チャット機能が利用できません。APIキーとモデル名を設定してください。');
+      this.initializeChatModel();
+      if(!this.chainWithHistory || !this.promptTemplate) return;
+    }
+
     const loadingMessageEl = this.appendMessage('応答を待っています...', 'loading');
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      const dummyResponse = `サーバーからの応答:\n「${trimmedMessage}」\nについてですね。\n\nこれはダミーの応答です。\n複数行の\nメッセージも\nこのように表示されます。`;
+      // console.log('[MemoriaChat] Sending to LangChain chain:', { input: trimmedMessageContent });
+      // const historyBeforeInvoke = await this.messageHistory.getMessages();
+      // console.log('[MemoriaChat] Current message history (before invoke):', JSON.stringify(historyBeforeInvoke.map(m => ({type: m._getType(), content: m.content})), null, 2));
+
+      // デバッグ用の詳細なログは削除またはコメントアウト
+      // console.log('[MemoriaChat] DEBUG: About to check this.promptTemplate.');
+      // if (this.promptTemplate) {
+      //   console.log('[MemoriaChat] DEBUG: this.promptTemplate exists. Type:', typeof this.promptTemplate, 'Instance of ChatPromptTemplate:', this.promptTemplate instanceof ChatPromptTemplate);
+      //   try {
+      //     console.log('[MemoriaChat] DEBUG: Attempting to call this.promptTemplate.formatMessages().');
+      //     const formattedMessagesForDebug = await this.promptTemplate.formatMessages({
+      //       input: trimmedMessageContent,
+      //       history: historyBeforeInvoke
+      //     });
+      //     console.log('[MemoriaChat] Manually formatted messages (for debug before invoke):', JSON.stringify(formattedMessagesForDebug.map(m => ({type: m._getType(), content: m.content})), null, 2));
+      //   } catch (e: any) {
+      //     console.error('[MemoriaChat] Error formatting messages for debug:', e.message, e.stack, e);
+      //   }
+      // } else {
+      //   console.log('[MemoriaChat] DEBUG: this.promptTemplate is NULL or UNDEFINED.');
+      // }
+      // console.log('[MemoriaChat] DEBUG: Finished checking this.promptTemplate.');
+
+
+      const response = await this.chainWithHistory.invoke(
+        { input: trimmedMessageContent },
+        { configurable: { sessionId: "obsidian-memoria-session" } } // sessionId は固定で良いか、動的にするか検討
+      );
+
+      // const historyAfterInvoke = await this.messageHistory.getMessages();
+      // console.log('[MemoriaChat] Current message history (after invoke):', JSON.stringify(historyAfterInvoke.map(m => ({type: m._getType(), content: m.content})), null, 2));
+      // console.log('[MemoriaChat] Received response from LangChain chain:', response);
+
       loadingMessageEl.remove();
-      this.appendModelMessage(dummyResponse);
-      console.log('[MemoriaChat] Dummy response displayed.');
-    } catch (error) {
-      console.error('[MemoriaChat] Dummy API call error:', error);
-      new Notice('ダミーAPIとの通信中にエラーが発生しました。');
+      if (response && typeof response.content === 'string') {
+        this.appendModelMessage(response.content);
+      } else if (response && Array.isArray(response.content) && response.content.length > 0 && typeof response.content[0] === 'object' && 'text' in response.content[0]) {
+        this.appendModelMessage((response.content[0] as any).text);
+      } else {
+        console.error('[MemoriaChat] Invalid or unexpected response format from LangChain chain:', response);
+        this.appendModelMessage('エラー: 予期しない形式の応答がありました。');
+      }
+
+    } catch (error: any) {
+      console.error('[MemoriaChat] Error sending message via LangChain:', error.message); // スタックトレースは開発時には有用だが、本番ではメッセージのみでも可
       loadingMessageEl.remove();
-      this.appendModelMessage('エラー: 応答を取得できませんでした。');
+      let errorMessage = 'エラー: メッセージの送信中に問題が発生しました。';
+      if (error.message) {
+        errorMessage += `\n詳細: ${error.message}`;
+      }
+      this.appendModelMessage(errorMessage);
+      new Notice(`チャットエラー: ${error.message || '不明なエラー'}`);
     } finally {
       this.scrollToBottom();
     }

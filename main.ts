@@ -1,5 +1,7 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin } from 'obsidian';
+// main.ts
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, WorkspaceLeaf } from 'obsidian'; // WorkspaceLeaf を追加
 import { GeminiPluginSettings, DEFAULT_SETTINGS, MemoriaSettingTab } from './src/settings';
+import { CHAT_VIEW_TYPE, ChatView } from './src/ui/chatWindow'; // ChatView と VIEW_TYPE をインポート
 
 // プラグインID: ObsidianMemoria (manifest.json の id と一致させる)
 
@@ -7,77 +9,95 @@ export default class ObsidianMemoria extends Plugin {
   settings: GeminiPluginSettings;
 
   async onload() {
-    console.log('Loading Obsidian Memoria Plugin'); // プラグイン名を変更
+    console.log('Loading Obsidian Memoria Plugin');
 
     await this.loadSettings();
 
-    // This creates an icon in the left ribbon.
-    const ribbonIconEl = this.addRibbonIcon('brain', 'Obsidian Memoria', (evt: MouseEvent) => { // アイコンとツールチップを変更
-      // Called when the user clicks the icon.
-      new Notice('Obsidian Memoria is active!'); // 通知メッセージを変更
-    });
-    // Perform additional things with the ribbon
-    ribbonIconEl.addClass('obsidian-memoria-ribbon-class'); // クラス名を変更
+    // チャットビューを登録
+    this.registerView(
+      CHAT_VIEW_TYPE,
+      (leaf) => new ChatView(leaf, this) // this (プラグインインスタンス) を渡す
+    );
 
-    // This adds a status bar item to the bottom of the app. Does not work on mobile apps.
+    // リボンアイコンにチャットビューを開く機能を追加
+    this.addRibbonIcon('messages-square', 'Memoria Chat', () => { // アイコンを変更
+      this.activateView(CHAT_VIEW_TYPE);
+    });
+
+    // ステータスバーアイテム
     const statusBarItemEl = this.addStatusBarItem();
-    statusBarItemEl.setText('Memoria Ready'); // ステータスバーテキストを変更
+    statusBarItemEl.setText('Memoria Ready');
 
-    // This adds a simple command that can be triggered anywhere
-		// this.addCommand({
-    //   id: 'open-sample-modal-simple', // コマンドIDはサンプルとして残すか、独自のものに変更
-    //   name: 'Open sample modal (simple) - Memoria', // コマンド名を変更
-    //   callback: () => {
-    //     new SampleModal(this.app).open();
-    //   }
-    // });
-    // // This adds an editor command that can perform some operation on the current editor instance
-    // this.addCommand({
-    //   id: 'sample-editor-command', // コマンドIDはサンプルとして残すか、独自のものに変更
-    //   name: 'Sample editor command - Memoria', // コマンド名を変更
-    //   editorCallback: (editor: Editor, view: MarkdownView) => {
-    //     console.log(editor.getSelection());
-    //     editor.replaceSelection('Sample Editor Command from Memoria');
-    //   }
-    // });
-
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-			this.addCommand({
-				id: 'open-sample-modal-complex', // コマンドIDはサンプルとして残すか、独自のものに変更
-				name: 'Open sample modal (complex) - Memoria', // コマンド名を変更
-				checkCallback: (checking: boolean) => {
-					const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-					if (markdownView) {
-						if (!checking) {
-							new MemoriaModal(this.app).open();
-						}
-						return true;
-					}
-					return false; // checkCallback では boolean を返すように修正
-				}
-			});
-
-    // This adds a settings tab so the user can configure various aspects of the plugin
-    this.addSettingTab(new MemoriaSettingTab(this.app, this)); // 新しい設定タブクラスを使用
-
-    // If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-    this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-      // console.log('click', evt); // デバッグ時以外はコメントアウト推奨
+    // メインのチャットビューを開くコマンド
+    this.addCommand({
+      id: 'open-memoria-chat',
+      name: 'Open Memoria Chat',
+      callback: () => {
+        this.activateView(CHAT_VIEW_TYPE);
+      },
     });
 
-    // When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-    this.registerInterval(window.setInterval(() => {
-      // console.log('Obsidian Memoria interval check'); // デバッグ時以外はコメントアウト推奨
-    }, 5 * 60 * 1000));
+    // --- サンプルコマンド群 (一旦コメントアウト) ---
+    /*
+    this.addCommand({
+      id: 'open-sample-modal-simple',
+      name: 'Open sample modal (simple) - Memoria',
+      callback: () => {
+        new MemoriaModal(this.app).open(); // リネーム後のモーダルクラスを使用
+      }
+    });
+    this.addCommand({
+      id: 'sample-editor-command',
+      name: 'Sample editor command - Memoria',
+      editorCallback: (editor: Editor, view: MarkdownView) => {
+        console.log(editor.getSelection());
+        editor.replaceSelection('Sample Editor Command from Memoria');
+      }
+    });
+    this.addCommand({
+      id: 'open-sample-modal-complex',
+      name: 'Open sample modal (complex) - Memoria',
+      checkCallback: (checking: boolean) => {
+        const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (markdownView) {
+          if (!checking) {
+            new MemoriaModal(this.app).open(); // リネーム後のモーダルクラスを使用
+          }
+          return true;
+        }
+        return false;
+      }
+    });
+    */
 
-    // (オプション) APIキーが設定されていない場合に通知を表示
+    // 設定タブ
+    this.addSettingTab(new MemoriaSettingTab(this.app, this));
+
+    // DOMイベントとインターバル (デバッグ時以外はコメントアウト推奨)
+    /*
+    this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
+      // console.log('click', evt);
+    });
+    this.registerInterval(window.setInterval(() => {
+      // console.log('Obsidian Memoria interval check');
+    }, 5 * 60 * 1000));
+    */
+
+    // APIキー未設定の通知
     if (!this.settings.geminiApiKey) {
-      new Notice('Gemini APIキーが設定されていません。Obsidian Memoria プラグイン設定画面から設定してください。', 0); // 0は通知が自動で消えないようにする設定
+      new Notice('Gemini APIキーが設定されていません。Obsidian Memoria プラグイン設定画面から設定してください。', 0);
     }
+
+    // (オプション) プラグインロード時にチャットビューを自動で開く場合
+    // this.app.workspace.onLayoutReady(async () => {
+    //   this.activateView(CHAT_VIEW_TYPE);
+    // });
   }
 
   onunload() {
     console.log('Unloading Obsidian Memoria Plugin');
+    // ビュータイプを登録解除 (もし必要なら)
+    // this.app.workspace.detachLeavesOfType(CHAT_VIEW_TYPE);
   }
 
   async loadSettings() {
@@ -87,16 +107,47 @@ export default class ObsidianMemoria extends Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
   }
+
+  // チャットビューを開くメソッド
+  async activateView(viewType: string) {
+    const { workspace } = this.app;
+
+    let leaf: WorkspaceLeaf | null = null;
+    const leaves = workspace.getLeavesOfType(viewType);
+
+    if (leaves.length > 0) {
+      // 既存のビューがあればそれをアクティブにする
+      leaf = leaves[0];
+    } else {
+      // なければ新しいリーフを右側に作成して開く
+      leaf = workspace.getRightLeaf(false); // false は既存のリーフを分割しない
+      if (leaf) {
+        await leaf.setViewState({
+          type: viewType,
+          active: true,
+        });
+      }
+    }
+
+    if (leaf) {
+      workspace.revealLeaf(leaf); // ビューを表示する
+    } else {
+        console.error(`Failed to activate or create leaf for view type: ${viewType}`);
+        new Notice(`チャットウィンドウを開けませんでした。`);
+    }
+  }
 }
 
-class MemoriaModal extends Modal {
+class MemoriaModal extends Modal { // クラス名を変更
   constructor(app: App) {
     super(app);
   }
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.setText('Woah! This is a sample modal from Obsidian Memoria.');
+    // モーダルの内容をプラグインに合わせて変更 (例)
+    contentEl.createEl('h3', { text: 'Memoria Modal' });
+    contentEl.createEl('p', { text: 'これは Obsidian Memoria プラグインのモーダルです。' });
   }
 
   onClose() {
