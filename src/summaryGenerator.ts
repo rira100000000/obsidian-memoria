@@ -47,7 +47,7 @@ export class SummaryGenerator {
         return title.replace(/[\\/:*?"<>|#^[\]]/g, '').replace(/\s+/g, '_').substring(0, 50);
     }
 
-    private buildPrompt(llmRoleName: string, conversationContent: string): string {
+        private buildPrompt(llmRoleName: string, conversationContent: string): string {
         // LLMに指示するプロンプトを構築
         return `
 You are an AI assistant tasked with summarizing a conversation log from a chat application.
@@ -57,43 +57,46 @@ The full conversation log is provided below:
 ${conversationContent}
 ---
 
-Based on this conversation, please provide the following information in a VALID JSON format.
+Based on this conversation, please perform the following:
+1.  Determine the primary language used in the conversation log (e.g., English, Japanese, Spanish).
+2.  Generate ALL textual content for the JSON fields below (especially conversationTitle, keyTakeaways, actionItems, mainTopics, summaryBody, userInsights, and llmInsights) IN THE SAME LANGUAGE as the primary language identified in step 1. For example, if the conversation is in Japanese, the summaryBody and conversationTitle must also be in Japanese.
+3.  Provide the information in a VALID JSON format.
 Ensure all string values are properly escaped within the JSON.
 Do not include any text outside the JSON block, not even "json" or backticks.
 
 {
-  "conversationTitle": "A concise and descriptive title for the conversation (max 10 words, e.g., 'Project X Progress Discussion').",
+  "conversationTitle": "A concise and descriptive title for the conversation (max 10 words). This title MUST be in the primary language of the conversation.",
   "tags": ["TagA", "TagB", "RelevantKeyword"],
-  "mood": "Overall mood of the conversation (Positive, Negative, Neutral, or Mixed).",
+  "mood": "Overall mood of the conversation (Positive, Negative, Neutral, or Mixed). This should be in the primary language of the conversation if applicable (e.g., '肯定的', '否定的'), or English if a direct translation is awkward.",
   "keyTakeaways": [
-    "Key conclusion or decision 1.",
-    "Key conclusion or decision 2."
+    "Key conclusion or decision 1. (MUST be in the primary language of the conversation)",
+    "Key conclusion or decision 2. (MUST be in the primary language of the conversation)"
   ],
   "actionItems": [
-    "User: Action item for User (e.g., 'User: Research topic Y').",
-    "${llmRoleName}: Action item for ${llmRoleName} (e.g., '${llmRoleName}: Remind about Z next meeting')."
+    "User: Action item for User (e.g., 'User: Research topic Y'). (MUST be in the primary language of the conversation)",
+    "${llmRoleName}: Action item for ${llmRoleName} (e.g., '${llmRoleName}: Remind about Z next meeting'). (MUST be in the primary language of the conversation)"
   ],
   "mainTopics": [
-    "Main topic 1 discussed.",
-    "Main topic 2 discussed."
+    "Main topic 1 discussed. (MUST be in the primary language of the conversation)",
+    "Main topic 2 discussed. (MUST be in the primary language of the conversation)"
   ],
-  "summaryBody": "A concise summary of the conversation's main points, written in a narrative style.",
+  "summaryBody": "A concise summary of the conversation's main points, written in a narrative style. This summary MUST be in the primary language of the conversation.",
   "userInsights": {
     "mainStatements": [
-      "Quote or paraphrase of user's key statement 1 (e.g., 'User stated they prefer option A.').",
-      "Quote or paraphrase of user's key statement 2."
+      "Quote or paraphrase of user's key statement 1. (MUST be in the primary language of the conversation)",
+      "Quote or paraphrase of user's key statement 2. (MUST be in the primary language of the conversation)"
     ],
     "observedEmotions": [
-      "User seemed pleased when discussing the positive feedback.",
-      "User expressed some concern regarding the deadline."
+      "User seemed pleased when discussing the positive feedback. (MUST be in the primary language of the conversation)",
+      "User expressed some concern regarding the deadline. (MUST be in the primary language of the conversation)"
     ]
   },
   "llmInsights": {
     "mainResponses": [
-      "${llmRoleName} provided details about feature X.",
-      "${llmRoleName} acknowledged user's suggestion."
+      "${llmRoleName} provided details about feature X. (MUST be in the primary language of the conversation)",
+      "${llmRoleName} acknowledged user's suggestion. (MUST be in the primary language of the conversation)"
     ],
-    "rolePlayed": "Brief description of the role ${llmRoleName} played (e.g., 'information provider', 'problem solver', 'empathetic listener')."
+    "rolePlayed": "Brief description of the role ${llmRoleName} played (e.g., 'information provider', 'problem solver', 'empathetic listener'). This description MUST be in the primary language of the conversation."
   }
 }
 `;
