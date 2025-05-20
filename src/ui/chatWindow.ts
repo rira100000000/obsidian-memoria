@@ -1,14 +1,13 @@
 // src/ui/chatWindow.ts
-import { ItemView, WorkspaceLeaf, Notice, moment, TFile } from 'obsidian'; // moment と TFile をObsidianからインポート
-import ObsidianMemoria from '../../main'; // main.ts のパスはプロジェクト構成に合わせてください
-import { GeminiPluginSettings } from '../settings'; // settings.ts のパスも同様
-
-// LangChain.jsからのインポート
+import { ItemView, WorkspaceLeaf, Notice, moment, TFile } from 'obsidian';
+import ObsidianMemoria from '../../main';
+import { GeminiPluginSettings } from '../settings';
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
 import { ChatMessageHistory } from "langchain/stores/message/in_memory";
 import { RunnableWithMessageHistory } from "@langchain/core/runnables";
 import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
+import { SummaryGenerator } from './../summaryGenerator'; // SummaryGeneratorをインポート
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
@@ -22,29 +21,26 @@ export class ChatView extends ItemView {
   private chatModel: ChatGoogleGenerativeAI | null = null;
   private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
 
-  private logFilePath: string | null = null; // ログファイルのパスを保持
-  private llmRoleName = 'Assistant'; // LLMの役割名のデフォルト (型推論に任せる)
+  private logFilePath: string | null = null;
+  private llmRoleName = 'Assistant';
+  private summaryGenerator: SummaryGenerator; // SummaryGeneratorのインスタンスを保持
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianMemoria) {
     super(leaf);
     this.plugin = plugin;
     this.settings = plugin.settings;
+    this.summaryGenerator = new SummaryGenerator(this.plugin); // SummaryGeneratorを初期化
   }
 
   private getLlmRoleName(systemPrompt: string): string {
     if (!systemPrompt) return 'Assistant';
     let match;
-    // "named <Name>" パターン (例: "You are a helpful assistant named HAL.")
     match = systemPrompt.match(/named\s+([\w\s-]+)(?:\.|$)/i);
     if (match && match[1]) return match[1].trim();
-    // "Your name is <Name>" パターン
     match = systemPrompt.match(/Your name is\s+([\w\s-]+)(?:\.|$)/i);
     if (match && match[1]) return match[1].trim();
-    // "Your role is <Role>" パターン
     match = systemPrompt.match(/Your role is\s+([\w\s-]+)(?:\.|$)/i);
     if (match && match[1]) return match[1].trim();
-    // "You are a <Role Name>." パターン (より具体的)
-    // "helpful assistant" や "AI assistant" のような一般的なものは避ける
     match = systemPrompt.match(/^You are (?:a|an)\s+([\w\s-]+?)(?:\.|$)/i);
     if (match && match[1]) {
         const role = match[1].trim();
@@ -54,7 +50,7 @@ export class ChatView extends ItemView {
         }
         return role;
     }
-    return 'Assistant'; // デフォルト
+    return 'Assistant';
   }
 
   private initializeChatModel() {
@@ -96,7 +92,8 @@ export class ChatView extends ItemView {
 
   onSettingsChanged() {
     this.initializeChatModel();
-    console.log('[MemoriaChat] Settings changed, chat model re-initialized.');
+    this.summaryGenerator.onSettingsChanged(); // SummaryGeneratorの設定も更新
+    console.log('[MemoriaChat] Settings changed, chat model and summary generator re-initialized.');
   }
 
   getViewType() { return CHAT_VIEW_TYPE; }
@@ -105,8 +102,8 @@ export class ChatView extends ItemView {
 
   async onOpen() {
     this.settings = this.plugin.settings;
-    this.initializeChatModel(); // Initialize model and llmRoleName
-    await this.setupLogging();   // Then setup logging which might use llmRoleName
+    this.initializeChatModel(); 
+    await this.setupLogging();   
 
     const container = this.containerEl.children[1];
     container.empty();
@@ -169,9 +166,8 @@ export class ChatView extends ItemView {
   private async setupLogging() {
     const logDir = 'FullLog';
     try {
-      // Ensure llmRoleName is set before it's used in initialLogContent
-      if (!this.llmRoleName) {
-        this.settings = this.plugin.settings; // Ensure settings are current
+      if (!this.llmRoleName || this.llmRoleName === 'Assistant') { // Ensure llmRoleName is properly set
+        this.settings = this.plugin.settings; 
         const systemPromptFromSettings = this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian.";
         this.llmRoleName = this.getLlmRoleName(systemPromptFromSettings);
       }
@@ -199,8 +195,8 @@ participants:
 `;
       await this.app.vault.create(this.logFilePath, initialLogContent);
       console.log(`[MemoriaChat] Created log file: ${this.logFilePath}`);
-    } catch (error) {
-      console.error('[MemoriaChat] Error setting up logging:', error);
+    } catch (error: any) {
+      console.error('[MemoriaChat] Error setting up logging:', error.message);
       new Notice('チャットログファイルの作成に失敗しました。');
       this.logFilePath = null;
     }
@@ -211,8 +207,11 @@ participants:
   }
 
   private async resetChat() {
+    // 0. Store path and role of the chat log to be summarized
+    const previousLogPath = this.logFilePath;
+    const previousLlmRoleName = this.llmRoleName;
+
     // 1. Create a new log file for the new chat session
-    // This will also update this.llmRoleName if it wasn't set, via setupLogging's internal check.
     await this.setupLogging(); 
 
     // 2. Clear the UI
@@ -222,7 +221,6 @@ participants:
 
     // 3. Reset in-memory message history
     this.messageHistory = new ChatMessageHistory();
-    // chainWithHistory will use the new messageHistory instance automatically
 
     // 4. Display initial welcome message in UI
     this.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');
@@ -233,12 +231,26 @@ participants:
     // 6. Clear and focus input field
     if (this.inputEl) {
       this.inputEl.value = '';
-      this.inputEl.style.height = 'auto'; // Reset textarea height
+      this.inputEl.style.height = 'auto';
       this.inputEl.focus();
     }
 
     console.log('[MemoriaChat] Chat has been reset. New log file created at:', this.logFilePath);
     new Notice('新しいチャットが開始されました。新しいログファイルが作成されました。');
+
+    // 7. Asynchronously generate summary for the previous chat session
+    if (previousLogPath && previousLlmRoleName) {
+      new Notice(`前のチャットの要約をバックグラウンドで生成開始します: ${previousLogPath}`);
+      this.summaryGenerator.generateSummary(previousLogPath, previousLlmRoleName)
+        .then(() => {
+            console.log(`[MemoriaChat] Summary generation completed for ${previousLogPath}`);
+            // Notice for successful summary creation is handled within SummaryGenerator
+        })
+        .catch(error => {
+            console.error(`[MemoriaChat] Summary generation failed for ${previousLogPath}:`, error);
+            new Notice(`前のチャット (${previousLogPath}) の要約作成に失敗しました。`);
+        });
+    }
   }
 
   private appendMessage(message: string, type: 'user' | 'model' | 'loading') {
@@ -291,8 +303,8 @@ participants:
     if (!this.chainWithHistory) {
       this.appendModelMessage('エラー: チャットチェーンが初期化されていません。プラグイン設定を確認してください。');
       new Notice('チャット機能が利用できません。設定を確認してください。');
-      this.initializeChatModel(); // Attempt to re-initialize
-      if(!this.chainWithHistory) return; // If still not initialized, stop
+      this.initializeChatModel();
+      if(!this.chainWithHistory) return;
     }
 
     const loadingMessageEl = this.appendMessage('応答を待っています...', 'loading');
@@ -300,7 +312,7 @@ participants:
     try {
       const response = await this.chainWithHistory.invoke(
         { input: trimmedMessageContent },
-        { configurable: { sessionId: "obsidian-memoria-session" } } // Ensure sessionId is consistent
+        { configurable: { sessionId: "obsidian-memoria-session" } }
       );
       loadingMessageEl.remove();
       let responseText = '';
@@ -308,7 +320,6 @@ participants:
       if (response && typeof response.content === 'string') {
         responseText = response.content;
       } else if (response && Array.isArray(response.content) && response.content.length > 0 && typeof response.content[0] === 'object' && response.content[0] !== null && 'text' in response.content[0]) {
-        // Handle cases where content might be an array of objects with a text property
         responseText = (response.content[0] as any).text;
       } else {
         console.error('[MemoriaChat] Invalid response format:', response);
