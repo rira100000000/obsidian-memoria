@@ -1,9 +1,9 @@
 // main.ts
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, WorkspaceLeaf } from 'obsidian'; // WorkspaceLeaf を追加
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, WorkspaceLeaf, PluginSettingTab, Setting } from 'obsidian'; // PluginSettingTab と Setting もインポート
 import { GeminiPluginSettings, DEFAULT_SETTINGS, MemoriaSettingTab } from './src/settings';
-import { CHAT_VIEW_TYPE, ChatView } from './src/ui/chatWindow'; // ChatView と VIEW_TYPE をインポート
-
-// プラグインID: ObsidianMemoria (manifest.json の id と一致させる)
+import { CHAT_VIEW_TYPE, ChatView } from './src/ui/chatWindow';
+// TagProfiler は ChatView 内部でインポートおよびインスタンス化されるため、ここでの直接インポートは不要です。
+// SummaryGenerator も同様です。
 
 export default class ObsidianMemoria extends Plugin {
   settings: GeminiPluginSettings;
@@ -14,13 +14,16 @@ export default class ObsidianMemoria extends Plugin {
     await this.loadSettings();
 
     // チャットビューを登録
+    // ChatView のコンストラクタにプラグインインスタンス (this) を渡すことで、
+    // ChatView は SummaryGenerator や TagProfiler を初期化し、
+    // それらのモジュールはプラグインの設定情報 (this.settings) にアクセスできます。
     this.registerView(
       CHAT_VIEW_TYPE,
-      (leaf) => new ChatView(leaf, this) // this (プラグインインスタンス) を渡す
+      (leaf) => new ChatView(leaf, this)
     );
 
     // リボンアイコンにチャットビューを開く機能を追加
-    this.addRibbonIcon('messages-square', 'Memoria Chat', () => { // アイコンを変更
+    this.addRibbonIcon('messages-square', 'Memoria Chat', () => {
       this.activateView(CHAT_VIEW_TYPE);
     });
 
@@ -37,13 +40,13 @@ export default class ObsidianMemoria extends Plugin {
       },
     });
 
-    // --- サンプルコマンド群 (一旦コメントアウト) ---
+    // --- サンプルコマンド群 (コメントアウト) ---
     /*
     this.addCommand({
       id: 'open-sample-modal-simple',
       name: 'Open sample modal (simple) - Memoria',
       callback: () => {
-        new MemoriaModal(this.app).open(); // リネーム後のモーダルクラスを使用
+        new MemoriaModal(this.app).open();
       }
     });
     this.addCommand({
@@ -61,7 +64,7 @@ export default class ObsidianMemoria extends Plugin {
         const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (markdownView) {
           if (!checking) {
-            new MemoriaModal(this.app).open(); // リネーム後のモーダルクラスを使用
+            new MemoriaModal(this.app).open();
           }
           return true;
         }
@@ -73,7 +76,7 @@ export default class ObsidianMemoria extends Plugin {
     // 設定タブ
     this.addSettingTab(new MemoriaSettingTab(this.app, this));
 
-    // DOMイベントとインターバル (デバッグ時以外はコメントアウト推奨)
+    // DOMイベントとインターバル (コメントアウト)
     /*
     this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
       // console.log('click', evt);
@@ -85,13 +88,15 @@ export default class ObsidianMemoria extends Plugin {
 
     // APIキー未設定の通知
     if (!this.settings.geminiApiKey) {
-      new Notice('Gemini APIキーが設定されていません。Obsidian Memoria プラグイン設定画面から設定してください。', 0);
+      new Notice('Gemini APIキーが設定されていません。Obsidian Memoria プラグイン設定画面から設定してください。', 0); // 0で通知が消えないようにする
     }
 
     // (オプション) プラグインロード時にチャットビューを自動で開く場合
     // this.app.workspace.onLayoutReady(async () => {
     //   this.activateView(CHAT_VIEW_TYPE);
     // });
+
+    console.log('Obsidian Memoria Plugin loaded successfully.');
   }
 
   onunload() {
@@ -106,6 +111,12 @@ export default class ObsidianMemoria extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+    // 設定変更をChatViewに通知し、ChatView経由でSummaryGeneratorやTagProfilerのモデルも再初期化する
+    // これはChatViewのonSettingsChangedメソッドで行われる
+    const chatViewLeaf = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)[0];
+    if (chatViewLeaf && chatViewLeaf.view instanceof ChatView) {
+        chatViewLeaf.view.onSettingsChanged();
+    }
   }
 
   // チャットビューを開くメソッド
@@ -120,7 +131,7 @@ export default class ObsidianMemoria extends Plugin {
       leaf = leaves[0];
     } else {
       // なければ新しいリーフを右側に作成して開く
-      leaf = workspace.getRightLeaf(false); // false は既存のリーフを分割しない
+      leaf = workspace.getRightLeaf(false);
       if (leaf) {
         await leaf.setViewState({
           type: viewType,
@@ -138,14 +149,14 @@ export default class ObsidianMemoria extends Plugin {
   }
 }
 
-class MemoriaModal extends Modal { // クラス名を変更
+// サンプルモーダル (現在は使用されていないが、参考として残す)
+class MemoriaModal extends Modal {
   constructor(app: App) {
     super(app);
   }
 
   onOpen() {
     const { contentEl } = this;
-    // モーダルの内容をプラグインに合わせて変更 (例)
     contentEl.createEl('h3', { text: 'Memoria Modal' });
     contentEl.createEl('p', { text: 'これは Obsidian Memoria プラグインのモーダルです。' });
   }
