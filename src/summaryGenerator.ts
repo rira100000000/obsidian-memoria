@@ -47,7 +47,7 @@ export class SummaryGenerator {
         return title.replace(/[\\/:*?"<>|#^[\]]/g, '').replace(/\s+/g, '_').substring(0, 50);
     }
 
-        private buildPrompt(llmRoleName: string, conversationContent: string): string {
+           private buildPrompt(llmRoleName: string, conversationContent: string): string {
         // LLMに指示するプロンプトを構築
         return `
 You are an AI assistant tasked with summarizing a conversation log from a chat application.
@@ -59,7 +59,7 @@ ${conversationContent}
 
 Based on this conversation, please perform the following:
 1.  Determine the primary language used in the conversation log (e.g., English, Japanese, Spanish).
-2.  Generate ALL textual content for the JSON fields below (especially conversationTitle, keyTakeaways, actionItems, mainTopics, summaryBody, userInsights, and llmInsights) IN THE SAME LANGUAGE as the primary language identified in step 1. For example, if the conversation is in Japanese, the summaryBody and conversationTitle must also be in Japanese.
+2.  Generate ALL textual content for the JSON fields below (especially conversationTitle, keyTakeaways, actionItems, mainTopics, summaryBody, userInsights, llmInsights, and relatedInformation) IN THE SAME LANGUAGE as the primary language identified in step 1. For example, if the conversation is in Japanese, the summaryBody and conversationTitle must also be in Japanese.
 3.  Provide the information in a VALID JSON format.
 Ensure all string values are properly escaped within the JSON.
 Do not include any text outside the JSON block, not even "json" or backticks.
@@ -97,10 +97,14 @@ Do not include any text outside the JSON block, not even "json" or backticks.
       "${llmRoleName} acknowledged user's suggestion. (MUST be in the primary language of the conversation)"
     ],
     "rolePlayed": "Brief description of the role ${llmRoleName} played (e.g., 'information provider', 'problem solver', 'empathetic listener'). This description MUST be in the primary language of the conversation."
-  }
+  },
+  "relatedInformation": [
+    "Reference to a related document, link, or topic mentioned in the conversation (e.g., '[[OtherNoteTitle]]', 'User mentioned the report from last week'). (MUST be in the primary language of the conversation)"
+  ] // Provide an empty array [] if no specific related documents, links, or explicitly related topics for cross-referencing are mentioned in the log.
 }
 `;
     }
+
 
     async generateSummary(fullLogPath: string, llmRoleName: string): Promise<void> {
         if (!this.chatModel) {
@@ -149,7 +153,7 @@ Do not include any text outside the JSON block, not even "json" or backticks.
         
         const {
             conversationTitle, tags, mood, keyTakeaways, actionItems,
-            mainTopics, summaryBody, userInsights, llmInsights
+            mainTopics, summaryBody, userInsights, llmInsights, relatedInformation
         } = llmResponseJson;
 
         if (!conversationTitle || typeof conversationTitle !== 'string' || conversationTitle.trim() === "") {
@@ -219,7 +223,10 @@ Do not include any text outside the JSON block, not even "json" or backticks.
         } else {
             summaryNoteContent += `N/A\n\n`;
         }
-        summaryNoteContent += `## 関連情報\n- (もしあれば)\n`;
+        if (Array.isArray(relatedInformation) && relatedInformation.length > 0) {
+            summaryNoteContent += `## 関連情報\n`;
+            summaryNoteContent += relatedInformation.map((item: string) => `- ${item}`).join('\n') + '\n\n';
+        }
 
         try {
             const existingSummary = this.app.vault.getAbstractFileByPath(summaryNotePath);
