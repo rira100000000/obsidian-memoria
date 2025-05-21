@@ -1,5 +1,5 @@
 // src/ui/chatWindow.ts
-import { ItemView, WorkspaceLeaf, Notice, moment, TFile, Modal, App, Setting } from 'obsidian'; // Modal, App, Setting をインポート
+import { ItemView, WorkspaceLeaf, Notice, moment, TFile, Modal, App, Setting } from 'obsidian';
 import ObsidianMemoria from '../../main';
 import { GeminiPluginSettings } from '../settings';
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
@@ -8,6 +8,7 @@ import { ChatMessageHistory } from "langchain/stores/message/in_memory";
 import { RunnableWithMessageHistory } from "@langchain/core/runnables";
 import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
 import { SummaryGenerator } from './../summaryGenerator';
+import { TagProfiler } from './../tagProfiler'; // TagProfilerをインポート
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
@@ -58,12 +59,14 @@ export class ChatView extends ItemView {
   private logFilePath: string | null = null;
   private llmRoleName = 'Assistant';
   private summaryGenerator: SummaryGenerator;
+  private tagProfiler: TagProfiler; // TagProfilerのインスタンスを追加
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianMemoria) {
     super(leaf);
     this.plugin = plugin;
     this.settings = plugin.settings;
     this.summaryGenerator = new SummaryGenerator(this.plugin);
+    this.tagProfiler = new TagProfiler(this.plugin); // TagProfilerを初期化
   }
 
   private getLlmRoleName(systemPrompt: string): string {
@@ -127,7 +130,8 @@ export class ChatView extends ItemView {
   onSettingsChanged() {
     this.initializeChatModel();
     this.summaryGenerator.onSettingsChanged();
-    console.log('[MemoriaChat] Settings changed, chat model and summary generator re-initialized.');
+    this.tagProfiler.onSettingsChanged(); // TagProfilerの設定も更新
+    console.log('[MemoriaChat] Settings changed, chat model, summary generator, and tag profiler re-initialized.');
   }
 
   getViewType() { return CHAT_VIEW_TYPE; }
@@ -137,7 +141,6 @@ export class ChatView extends ItemView {
   async onOpen() {
     this.settings = this.plugin.settings;
     this.initializeChatModel();
-    // await this.setupLogging(); // ログ作成を onOpen から sendMessage に移動
 
     const container = this.containerEl.children[1];
     container.empty();
@@ -147,7 +150,7 @@ export class ChatView extends ItemView {
     styleEl.textContent = `
       .memoria-chat-view-container { display: flex; flex-direction: column; height: 100%; }
       .memoria-chat-header { display: flex; justify-content: flex-end; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--background-modifier-border); background-color: var(--background-primary); flex-shrink: 0; }
-      .memoria-chat-header button { margin-left: 8px; } /* ボタン間のマージンを追加 */
+      .memoria-chat-header button { margin-left: 8px; }
       .memoria-new-chat-button { /* new chat button styles */ }
       .memoria-discard-chat-button { /* discard chat button styles */ }
       .memoria-chat-messages-wrapper { flex-grow: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; }
@@ -163,14 +166,12 @@ export class ChatView extends ItemView {
 
     const chatHeaderEl = container.createEl('div', { cls: 'memoria-chat-header' });
 
-    // 新しいチャットボタン
     const newChatButton = chatHeaderEl.createEl('button', {
       text: 'New Chat',
       cls: 'mod-cta memoria-new-chat-button'
     });
     newChatButton.addEventListener('click', () => this.resetChat());
 
-    // チャットを破棄ボタン
     const discardChatButton = chatHeaderEl.createEl('button', {
         text: 'Discard Chat',
         cls: 'mod-warning memoria-discard-chat-button'
@@ -254,13 +255,12 @@ participants:
   }
 
   async onClose() {
-    // this.logFilePath = null; // ログファイルパスはセッション中維持されるべき
+    // Clean up resources if needed
   }
 
   private async confirmAndDiscardChat() {
     if (!this.logFilePath) {
         new Notice('破棄するチャットログがありません。');
-        // チャットログがない場合でも、UIとメモリ上の履歴はリセットする
         await this.resetChat(true); // 要約なしでリセット
         new Notice('現在のチャット（ログなし）が破棄され、新しいチャットが開始されました。');
         return;
@@ -290,13 +290,11 @@ participants:
                 console.error(`[MemoriaChat] Error deleting log file ${this.logFilePath}:`, error);
             }
         } else {
-            // ログファイルが見つからない場合でも、ユーザーは破棄を意図しているので、UIリセットは行う
             new Notice(`チャットログファイル ${this.logFilePath} が見つかりませんでした。UIはリセットされます。`);
             console.warn(`[MemoriaChat] Log file not found for deletion: ${this.logFilePath}`);
         }
         this.logFilePath = null;
     } else {
-        // ログファイルパスがない場合（最初のメッセージ送信前など）でも、UIとメモリ上の履歴はリセットする
         console.log('[MemoriaChat] No log file path set, resetting UI and history.');
     }
     await this.resetChat(true); // 要約をスキップしてチャットをリセット
@@ -304,12 +302,11 @@ participants:
   }
 
 
-  private async resetChat(skipSummary: boolean = false) {
+  private async resetChat(skipSummary = false) {
     const previousLogPath = this.logFilePath;
     const previousLlmRoleName = this.llmRoleName;
 
-    // 新しいログファイルパスをnullに初期化。最初のメッセージ送信時に作成される。
-    this.logFilePath = null;
+    this.logFilePath = null; // Initialize log file path to null. It will be created on the first message.
 
     if (this.chatMessagesEl) {
       this.chatMessagesEl.empty();
@@ -324,24 +321,40 @@ participants:
       this.inputEl.focus();
     }
 
-    console.log('[MemoriaChat] Chat has been reset.'); // ログファイル作成のメッセージは削除
+    console.log('[MemoriaChat] Chat has been reset.');
+    
     if (!skipSummary) {
-        new Notice('新しいチャットが開始されました。'); // ログファイル作成のメッセージは削除
+        new Notice('新しいチャットが開始されました。');
     }
 
 
     if (!skipSummary && previousLogPath && previousLlmRoleName) {
       new Notice(`前のチャットの要約をバックグラウンドで生成開始します: ${previousLogPath}`);
       this.summaryGenerator.generateSummary(previousLogPath, previousLlmRoleName)
-        .then(() => {
-            console.log(`[MemoriaChat] Summary generation completed for ${previousLogPath}`);
+        .then(async (summaryNoteFile: TFile | null) => { // summaryNoteFile に型情報を追加
+          if (summaryNoteFile) { // TFileが返された場合
+            console.log(`[MemoriaChat] Summary generation completed: ${summaryNoteFile.path}`);
+            new Notice(`サマリーノートが生成されました: ${summaryNoteFile.basename}`);
+            try {
+              // TagProfilerの処理を呼び出し
+              await this.tagProfiler.processSummaryNote(summaryNoteFile);
+              console.log(`[MemoriaChat] Tag profiling initiated for ${summaryNoteFile.path}`);
+              new Notice(`タグプロファイル処理を開始しました: ${summaryNoteFile.basename}`);
+            } catch (tpError: any) {
+              console.error(`[MemoriaChat] Error during tag profiling for ${summaryNoteFile.path}:`, tpError.message, tpError.stack);
+              new Notice(`タグプロファイル処理中にエラーが発生しました: ${summaryNoteFile.basename}`);
+            }
+          } else {
+            console.log(`[MemoriaChat] Summary generation for ${previousLogPath} did not return a file.`);
+            new Notice(`前のチャット (${previousLogPath}) のサマリーノートファイルが取得できませんでした。`);
+          }
         })
         .catch(error => {
-            console.error(`[MemoriaChat] Summary generation failed for ${previousLogPath}:`, error);
-            new Notice(`前のチャット (${previousLogPath}) の要約作成に失敗しました。`);
+          console.error(`[MemoriaChat] Summary generation failed for ${previousLogPath}:`, error);
+          new Notice(`前のチャット (${previousLogPath}) の要約作成に失敗しました。`);
         });
     } else if (skipSummary) {
-        console.log('[MemoriaChat] Summary generation skipped for previous chat.');
+      console.log('[MemoriaChat] Summary generation skipped for previous chat.');
     }
   }
 
@@ -374,10 +387,9 @@ participants:
       return;
     }
 
-    // 最初のユーザーメッセージ送信時にログファイルを作成
     if (!this.logFilePath) {
         await this.setupLogging();
-        if (!this.logFilePath) { // setupLoggingが失敗した場合
+        if (!this.logFilePath) {
             this.appendModelMessage('エラー: ログファイルの作成に失敗したため、メッセージを送信できません。');
             new Notice('ログファイルの作成に失敗しました。');
             return;

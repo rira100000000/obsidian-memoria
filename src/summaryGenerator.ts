@@ -1,6 +1,6 @@
 // src/summaryGenerator.ts
 import { App, Notice, TFile, moment, stringifyYaml } from 'obsidian';
-import ObsidianMemoria from '../main';
+import ObsidianMemoria from '../main'; // main.ts のパスをプロジェクト構成に合わせてください
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { GeminiPluginSettings } from './settings'; // settings.ts のパスをプロジェクト構成に合わせてください
 
@@ -22,7 +22,7 @@ export class SummaryGenerator {
             try {
                 this.chatModel = new ChatGoogleGenerativeAI({
                     apiKey: this.settings.geminiApiKey,
-                    model: this.settings.geminiModel, // Consider a model optimized for summarization/extraction if available
+                    model: this.settings.geminiModel,
                 });
                 console.log('[SummaryGenerator] ChatGoogleGenerativeAI model initialized for summarization.');
             } catch (error: any) {
@@ -35,9 +35,8 @@ export class SummaryGenerator {
         }
     }
 
-    // 設定変更時にモデルを再初期化するメソッド (オプション)
     public onSettingsChanged() {
-        this.settings = this.plugin.settings; // 最新の設定を読み込む
+        this.settings = this.plugin.settings;
         this.initializeChatModel();
         console.log('[SummaryGenerator] Settings changed, chat model re-initialized.');
     }
@@ -47,7 +46,7 @@ export class SummaryGenerator {
         return title.replace(/[\\/:*?"<>|#^[\]]/g, '').replace(/\s+/g, '_').substring(0, 50);
     }
 
-           private buildPrompt(llmRoleName: string, conversationContent: string): string {
+    private buildPrompt(llmRoleName: string, conversationContent: string): string {
         // LLMに指示するプロンプトを構築
         return `
 You are an AI assistant tasked with summarizing a conversation log from a chat application.
@@ -100,28 +99,27 @@ Do not include any text outside the JSON block, not even "json" or backticks.
   },
   "relatedInformation": [
     "Reference to a related document, link, or topic mentioned in the conversation (e.g., '[[OtherNoteTitle]]', 'User mentioned the report from last week'). (MUST be in the primary language of the conversation)"
-  ] // Provide an empty array [] if no specific related documents, links, or explicitly related topics for cross-referencing are mentioned in the log.
+  ]
 }
 `;
     }
 
 
-    async generateSummary(fullLogPath: string, llmRoleName: string): Promise<void> {
+    async generateSummary(fullLogPath: string, llmRoleName: string): Promise<TFile | null> {
         if (!this.chatModel) {
             new Notice("サマリー生成: LLMが初期化されていません。設定を確認してください。");
             console.error("[SummaryGenerator] LLM for summarization is not initialized.");
-            return;
+            return null;
         }
 
         const fullLogFile = this.app.vault.getAbstractFileByPath(fullLogPath);
         if (!(fullLogFile instanceof TFile)) {
             new Notice(`サマリー生成: ログファイルが見つかりません: ${fullLogPath}`);
             console.error(`[SummaryGenerator] Full log file not found: ${fullLogPath}`);
-            return;
+            return null;
         }
 
         const fullLogContent = await this.app.vault.cachedRead(fullLogFile);
-        // フロントマターを除いた会話内容を取得
         const conversationContentMatch = fullLogContent.match(/---\s*[\s\S]*?---([\s\S]*)/);
         const conversationContent = conversationContentMatch && conversationContentMatch[1] ? conversationContentMatch[1].trim() : fullLogContent;
 
@@ -138,7 +136,6 @@ Do not include any text outside the JSON block, not even "json" or backticks.
                 throw new Error("LLM response content is not a string.");
             }
             
-            // JSONが```json ... ```で囲まれている場合も考慮
             const jsonMatch = responseContent.match(/```json\s*([\s\S]*?)\s*```/);
             const jsonStringToParse = jsonMatch && jsonMatch[1] ? jsonMatch[1] : responseContent;
             
@@ -148,7 +145,7 @@ Do not include any text outside the JSON block, not even "json" or backticks.
         } catch (error: any) {
             console.error("[SummaryGenerator] Error calling LLM or parsing JSON response:", error.message, error.stack);
             new Notice("LLMからの要約データ取得または解析に失敗しました。");
-            return;
+            return null;
         }
         
         const {
@@ -159,12 +156,9 @@ Do not include any text outside the JSON block, not even "json" or backticks.
         if (!conversationTitle || typeof conversationTitle !== 'string' || conversationTitle.trim() === "") {
             console.error("[SummaryGenerator] Conversation title missing or invalid from LLM response.");
             new Notice("LLMが会話タイトルを提供しませんでした。デフォルトタイトルを使用します。");
-            // フォールバックタイトルを設定することも検討
-            // conversationTitle = "Untitled Conversation"; 
-            return; // タイトルがないとファイル名が作れないので中断
+            return null; 
         }
 
-        // SummaryNoteディレクトリ作成
         const summaryDir = 'SummaryNote';
         try {
             const dirExists = await this.app.vault.adapter.exists(summaryDir);
@@ -175,12 +169,12 @@ Do not include any text outside the JSON block, not even "json" or backticks.
         } catch (error: any) {
              console.error(`[SummaryGenerator] Error creating directory ${summaryDir}:`, error.message);
              new Notice(`${summaryDir}ディレクトリの作成に失敗しました。`);
-             return;
+             return null;
         }
         
-        const logFileBasename = fullLogFile.basename; // YYYYMMDDHHmmss
+        const logFileBasename = fullLogFile.basename;
         const logFileMoment = moment(logFileBasename, "YYYYMMDDHHmmss");
-        const summaryNoteTimestamp = logFileMoment.isValid() ? logFileMoment.format("YYYYMMDDHHmm") : moment().format("YYYYMMDDHHmm"); // Fallback to current time if parsing fails
+        const summaryNoteTimestamp = logFileMoment.isValid() ? logFileMoment.format("YYYYMMDDHHmm") : moment().format("YYYYMMDDHHmm");
 
         const sanitizedTitle = this.sanitizeTitleForFilename(conversationTitle);
         const summaryNoteFilename = `SN-${summaryNoteTimestamp}-${sanitizedTitle}.md`;
@@ -194,7 +188,7 @@ Do not include any text outside the JSON block, not even "json" or backticks.
             type: 'conversation_summary',
             participants: ['User', llmRoleName],
             tags: Array.isArray(tags) ? tags : [],
-            full_log: `[[${fullLogFile.name}]]`, // 正しいFullLogファイル名へのリンク
+            full_log: `[[${fullLogFile.name}]]`,
             mood: mood || 'Neutral',
             key_takeaways: Array.isArray(keyTakeaways) ? keyTakeaways : [],
             action_items: Array.isArray(actionItems) ? actionItems : [],
@@ -230,27 +224,34 @@ Do not include any text outside the JSON block, not even "json" or backticks.
 
         try {
             const existingSummary = this.app.vault.getAbstractFileByPath(summaryNotePath);
-            if (existingSummary) {
+            let summaryFile: TFile | null = null; 
+
+            if (existingSummary instanceof TFile) {
                 new Notice(`サマリーノートは既に存在します: ${summaryNoteFilename}`);
-                console.warn(`[SummaryGenerator] Summary note already exists: ${summaryNotePath}. Skipping creation.`);
-                 // 既存のノートがある場合でもFullLogの更新は試みる
+                console.warn(`[SummaryGenerator] Summary note already exists: ${summaryNotePath}. Using existing.`);
+                summaryFile = existingSummary;
             } else {
-                await this.app.vault.create(summaryNotePath, summaryNoteContent);
+                summaryFile = await this.app.vault.create(summaryNotePath, summaryNoteContent);
                 new Notice(`サマリーノート作成: ${summaryNoteFilename}`);
                 console.log(`[SummaryGenerator] Summary note created: ${summaryNotePath}`);
             }
 
-
-            // FullLogのフロントマターを更新
-            await this.app.fileManager.processFrontMatter(fullLogFile, (fm) => {
-                fm.title = conversationTitle;
-                fm.summary_note = `[[${summaryNoteFilename}]]`; // SummaryNoteファイル名（パスなし）
-            });
-            console.log(`[SummaryGenerator] FullLog (${fullLogPath}) のフロントマターを更新しました。`);
+            if (summaryFile) { 
+                await this.app.fileManager.processFrontMatter(fullLogFile, (fm) => {
+                    fm.title = conversationTitle;
+                    fm.summary_note = `[[${summaryNoteFilename}]]`;
+                });
+                console.log(`[SummaryGenerator] FullLog (${fullLogPath}) のフロントマターを更新しました。`);
+                return summaryFile; 
+            } else {
+                console.error("[SummaryGenerator] Failed to obtain TFile for summary note (either existing or newly created).");
+                return null;
+            }
 
         } catch (error: any) {
             console.error("[SummaryGenerator] サマリーノート作成またはFullLog更新エラー:", error.message, error.stack);
             new Notice("サマリーノート作成またはFullLog更新中にエラーが発生しました。");
+            return null;
         }
     }
 }
