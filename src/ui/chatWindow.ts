@@ -137,7 +137,7 @@ export class ChatView extends ItemView {
   async onOpen() {
     this.settings = this.plugin.settings;
     this.initializeChatModel();
-    await this.setupLogging();
+    // await this.setupLogging(); // ログ作成を onOpen から sendMessage に移動
 
     const container = this.containerEl.children[1];
     container.empty();
@@ -165,15 +165,15 @@ export class ChatView extends ItemView {
 
     // 新しいチャットボタン
     const newChatButton = chatHeaderEl.createEl('button', {
-      text: 'New Chat', // テキストを英語に変更
+      text: 'New Chat',
       cls: 'mod-cta memoria-new-chat-button'
     });
     newChatButton.addEventListener('click', () => this.resetChat());
 
     // チャットを破棄ボタン
     const discardChatButton = chatHeaderEl.createEl('button', {
-        text: 'Discard Chat', // テキストを英語に変更
-        cls: 'mod-warning memoria-discard-chat-button' // mod-warning で赤系のスタイルに
+        text: 'Discard Chat',
+        cls: 'mod-warning memoria-discard-chat-button'
     });
     discardChatButton.addEventListener('click', () => this.confirmAndDiscardChat());
 
@@ -239,7 +239,6 @@ participants:
 **日時**: ${currentDate}
 ---
 `;
-      // 既存のログファイルがない場合のみ作成
       const logFileExists = await this.app.vault.adapter.exists(this.logFilePath);
       if (!logFileExists) {
         await this.app.vault.create(this.logFilePath, initialLogContent);
@@ -255,13 +254,15 @@ participants:
   }
 
   async onClose() {
-    // ログファイルパスをリセットするが、ファイル自体は削除しない
-    // this.logFilePath = null; // 削除ボタンで明示的に削除するため、ここではリセットしない
+    // this.logFilePath = null; // ログファイルパスはセッション中維持されるべき
   }
 
   private async confirmAndDiscardChat() {
     if (!this.logFilePath) {
         new Notice('破棄するチャットログがありません。');
+        // チャットログがない場合でも、UIとメモリ上の履歴はリセットする
+        await this.resetChat(true); // 要約なしでリセット
+        new Notice('現在のチャット（ログなし）が破棄され、新しいチャットが開始されました。');
         return;
     }
 
@@ -289,15 +290,16 @@ participants:
                 console.error(`[MemoriaChat] Error deleting log file ${this.logFilePath}:`, error);
             }
         } else {
-            new Notice(`チャットログファイル ${this.logFilePath} が見つかりません。`);
+            // ログファイルが見つからない場合でも、ユーザーは破棄を意図しているので、UIリセットは行う
+            new Notice(`チャットログファイル ${this.logFilePath} が見つかりませんでした。UIはリセットされます。`);
             console.warn(`[MemoriaChat] Log file not found for deletion: ${this.logFilePath}`);
         }
-        this.logFilePath = null; // ログファイルパスをクリア
+        this.logFilePath = null;
     } else {
-        new Notice('削除対象のログファイルパスが設定されていません。');
+        // ログファイルパスがない場合（最初のメッセージ送信前など）でも、UIとメモリ上の履歴はリセットする
+        console.log('[MemoriaChat] No log file path set, resetting UI and history.');
     }
-    // 要約をスキップしてチャットをリセット
-    await this.resetChat(true);
+    await this.resetChat(true); // 要約をスキップしてチャットをリセット
     new Notice('現在のチャットが破棄され、新しいチャットが開始されました。');
   }
 
@@ -306,7 +308,8 @@ participants:
     const previousLogPath = this.logFilePath;
     const previousLlmRoleName = this.llmRoleName;
 
-    await this.setupLogging();
+    // 新しいログファイルパスをnullに初期化。最初のメッセージ送信時に作成される。
+    this.logFilePath = null;
 
     if (this.chatMessagesEl) {
       this.chatMessagesEl.empty();
@@ -321,9 +324,9 @@ participants:
       this.inputEl.focus();
     }
 
-    console.log('[MemoriaChat] Chat has been reset. New log file created at:', this.logFilePath);
-    if (!skipSummary) { // skipSummaryがfalseの場合のみ通知
-        new Notice('新しいチャットが開始されました。新しいログファイルが作成されました。');
+    console.log('[MemoriaChat] Chat has been reset.'); // ログファイル作成のメッセージは削除
+    if (!skipSummary) {
+        new Notice('新しいチャットが開始されました。'); // ログファイル作成のメッセージは削除
     }
 
 
@@ -369,6 +372,16 @@ participants:
       if (rawMessageContent.length > 0) new Notice("メッセージが空白です。送信は行いません。");
       this.inputEl.value = ''; this.inputEl.style.height = 'auto'; this.inputEl.focus();
       return;
+    }
+
+    // 最初のユーザーメッセージ送信時にログファイルを作成
+    if (!this.logFilePath) {
+        await this.setupLogging();
+        if (!this.logFilePath) { // setupLoggingが失敗した場合
+            this.appendModelMessage('エラー: ログファイルの作成に失敗したため、メッセージを送信できません。');
+            new Notice('ログファイルの作成に失敗しました。');
+            return;
+        }
     }
 
     this.appendUserMessage(trimmedMessageContent);
