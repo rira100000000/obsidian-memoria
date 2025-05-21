@@ -66,9 +66,36 @@ export interface SummaryNoteFrontmatter {
   type: 'conversation_summary';
   participants: string[];
   tags?: string[];
-  full_log: string; // "[[YYYYMMDDHHmmss.md]]"
+  full_log: string; // "[[YYYYMMDDHHmmss.md]]" または "YYYYMMDDHHmmss.md" または "YYYYMMDDHHmmss"
   mood?: string;
   key_takeaways?: string[];
   action_items?: string[];
   // 他にもsummaryGenerator.tsで定義されているフィールドがある想定
+}
+
+// --- ContextRetriever で使用する型定義 ---
+export interface RetrievedContextItem {
+  sourceType: 'TPN' | 'SN' | 'FullLog';
+  sourceName: string; // ファイル名 (拡張子なし)
+  contentSnippet: string;
+  relevance?: number;
+  title?: string;
+  date?: string; // YYYY-MM-DD HH:MM 形式
+}
+
+export interface RetrievedContext {
+  originalPrompt: string;
+  identifiedKeywords: Array<{ keyword: string; inPromptScore: number; finalScore?: number; correspondingTag?: string }>;
+  retrievedItems: RetrievedContextItem[];
+  llmContextPrompt: string;
+  nextSnToFetch?: string[];
+  nextFlToFetch?: string;
+  llmEvaluationResponse?: string;
+}
+
+export interface LlmContextEvaluationResponse {
+  sufficient_for_response: boolean;
+  reasoning?: string;
+  next_summary_notes_to_fetch?: string[];
+  requires_full_log_for_summary_note?: string;
 }

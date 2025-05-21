@@ -6,13 +6,19 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
 import { ChatMessageHistory } from "langchain/stores/message/in_memory";
 import { RunnableWithMessageHistory } from "@langchain/core/runnables";
-import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
-import { SummaryGenerator } from './../summaryGenerator';
-import { TagProfiler } from './../tagProfiler'; // TagProfilerをインポート
+import {
+  ChatPromptTemplate,
+  MessagesPlaceholder,
+  SystemMessagePromptTemplate, // 追加
+  HumanMessagePromptTemplate // 追加
+} from "@langchain/core/prompts";
+import { SummaryGenerator } from '../summaryGenerator';
+import { TagProfiler } from '../tagProfiler';
+import { ContextRetriever, RetrievedContext } from '../contextRetriever';
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
-// 警告モーダルクラス
+// 警告モーダルクラス (変更なし)
 class ConfirmationModal extends Modal {
   constructor(app: App, private titleText: string, private messageText: string, private onConfirm: () => void) {
     super(app);
@@ -55,18 +61,20 @@ export class ChatView extends ItemView {
   private messageHistory = new ChatMessageHistory();
   private chatModel: ChatGoogleGenerativeAI | null = null;
   private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
+  private contextRetriever: ContextRetriever;
 
   private logFilePath: string | null = null;
   private llmRoleName = 'Assistant';
   private summaryGenerator: SummaryGenerator;
-  private tagProfiler: TagProfiler; // TagProfilerのインスタンスを追加
+  private tagProfiler: TagProfiler;
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianMemoria) {
     super(leaf);
     this.plugin = plugin;
     this.settings = plugin.settings;
     this.summaryGenerator = new SummaryGenerator(this.plugin);
-    this.tagProfiler = new TagProfiler(this.plugin); // TagProfilerを初期化
+    this.tagProfiler = new TagProfiler(this.plugin);
+    this.contextRetriever = new ContextRetriever(this.plugin);
   }
 
   private getLlmRoleName(systemPrompt: string): string {
@@ -92,8 +100,25 @@ export class ChatView extends ItemView {
 
   private initializeChatModel() {
     this.settings = this.plugin.settings;
-    const systemPromptFromSettings = this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian.";
-    this.llmRoleName = this.getLlmRoleName(systemPromptFromSettings);
+    const baseSystemPrompt = this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian.";
+    this.llmRoleName = this.getLlmRoleName(baseSystemPrompt);
+
+    const memoryContextInstruction = `
+
+## 記憶からの参考情報 (Memory Recall Information):
+{retrieved_context_string}
+
+**指示:**
+上記の「記憶からの参考情報」は、あなたとユーザーとの過去の会話や関連ノートから抜粋されたものです。
+現在のユーザーの質問「{input}」に回答する際には、この情報を**最優先で考慮し、積極的に活用**してください。
+- 情報がユーザーの質問に直接関連する場合、その情報を基に具体的かつ文脈に沿った応答を生成してください。
+- ユーザーが過去に示した意見、経験、好み（例：好きなもの、嫌いなもの、以前の決定など）が情報に含まれている場合、それを応答に反映させ、一貫性のある対話を目指してください。
+- 情報を参照したことが明確にわかる場合は、「以前お話しいただいた〇〇の件ですが…」や「〇〇がお好きだと記憶していますが…」のように、自然な形で言及してください。
+- もし提供された情報が現在の質問と無関係である、または不正確であると明確に判断できる場合に限り、その情報を無視しても構いません。その際は、なぜ無視したのかを簡潔に説明する必要はありません。
+- 「記憶からの参考情報」が「記憶からの関連情報は見つかりませんでした。」となっている場合は、ユーザーの現在の質問にのみ基づいて応答してください。
+`;
+    const finalSystemPromptTemplate = baseSystemPrompt + memoryContextInstruction; // これはテンプレート文字列
+
 
     if (this.settings.geminiApiKey && this.settings.geminiModel) {
       try {
@@ -101,19 +126,33 @@ export class ChatView extends ItemView {
           apiKey: this.settings.geminiApiKey,
           model: this.settings.geminiModel,
         });
+
+        // SystemMessage をテンプレートとして定義
+        const systemMessagePrompt = SystemMessagePromptTemplate.fromTemplate(finalSystemPromptTemplate);
+        // HumanMessage をテンプレートとして定義
+        const humanMessagePrompt = HumanMessagePromptTemplate.fromTemplate("{input}");
+
         const prompt = ChatPromptTemplate.fromMessages([
-          new SystemMessage(systemPromptFromSettings),
+          systemMessagePrompt,
           new MessagesPlaceholder("history"),
-          ["human", "{input}"],
+          humanMessagePrompt,
         ]);
+
         const chain = prompt.pipe(this.chatModel);
         this.chainWithHistory = new RunnableWithMessageHistory({
             runnable: chain,
             getMessageHistory: (_sessionId) => this.messageHistory,
+            // inputMessagesKey は、invokeに渡すオブジェクトのうち、
+            // HumanMessagePromptTemplate.fromTemplate("{input}") の {input} に対応するキーを指定します。
+            // また、SystemMessagePromptTemplate の {input} にも同じ値が使われます。
             inputMessagesKey: "input",
             historyMessagesKey: "history",
+            // retrieved_context_string のような追加の入力変数は、
+            // invoke時に渡すオブジェクトに含め、SystemMessagePromptTemplate がそれを解決します。
         });
         console.log(`[MemoriaChat] Chat model initialized. LLM Role: ${this.llmRoleName}`);
+        // 実際に使用されるシステムプロンプトテンプレートをログに出力（プレースホルダーは展開前）
+        console.log(`[MemoriaChat] System prompt template being used: ${finalSystemPromptTemplate}`);
       } catch (error: any) {
         console.error('[MemoriaChat] Failed to initialize ChatGoogleGenerativeAI model or chain:', error.message);
         new Notice('Geminiモデルまたはチャットチェーンの初期化に失敗しました。');
@@ -130,8 +169,9 @@ export class ChatView extends ItemView {
   onSettingsChanged() {
     this.initializeChatModel();
     this.summaryGenerator.onSettingsChanged();
-    this.tagProfiler.onSettingsChanged(); // TagProfilerの設定も更新
-    console.log('[MemoriaChat] Settings changed, chat model, summary generator, and tag profiler re-initialized.');
+    this.tagProfiler.onSettingsChanged();
+    this.contextRetriever.onSettingsChanged();
+    console.log('[MemoriaChat] Settings changed, all relevant modules re-initialized.');
   }
 
   getViewType() { return CHAT_VIEW_TYPE; }
@@ -140,7 +180,8 @@ export class ChatView extends ItemView {
 
   async onOpen() {
     this.settings = this.plugin.settings;
-    this.initializeChatModel();
+    this.initializeChatModel(); 
+    this.contextRetriever.onSettingsChanged(); 
 
     const container = this.containerEl.children[1];
     container.empty();
@@ -151,8 +192,6 @@ export class ChatView extends ItemView {
       .memoria-chat-view-container { display: flex; flex-direction: column; height: 100%; }
       .memoria-chat-header { display: flex; justify-content: flex-end; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--background-modifier-border); background-color: var(--background-primary); flex-shrink: 0; }
       .memoria-chat-header button { margin-left: 8px; }
-      .memoria-new-chat-button { /* new chat button styles */ }
-      .memoria-discard-chat-button { /* discard chat button styles */ }
       .memoria-chat-messages-wrapper { flex-grow: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; }
       .memoria-chat-messages-inner { display: flex; flex-direction: column; }
       .memoria-chat-message { margin-bottom: 8px; padding: 8px 12px; border-radius: 12px; max-width: 85%; width: fit-content; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
@@ -214,7 +253,6 @@ export class ChatView extends ItemView {
     const logDir = 'FullLog';
     try {
       if (!this.llmRoleName || this.llmRoleName === 'Assistant') {
-        this.settings = this.plugin.settings;
         const systemPromptFromSettings = this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian.";
         this.llmRoleName = this.getLlmRoleName(systemPromptFromSettings);
       }
@@ -259,9 +297,10 @@ participants:
   }
 
   private async confirmAndDiscardChat() {
-    if (!this.logFilePath) {
+    const messages = await this.messageHistory.getMessages();
+    if (!this.logFilePath && messages.length <= 1) { 
         new Notice('破棄するチャットログがありません。');
-        await this.resetChat(true); // 要約なしでリセット
+        await this.resetChat(true); 
         new Notice('現在のチャット（ログなし）が破棄され、新しいチャットが開始されました。');
         return;
     }
@@ -297,7 +336,7 @@ participants:
     } else {
         console.log('[MemoriaChat] No log file path set, resetting UI and history.');
     }
-    await this.resetChat(true); // 要約をスキップしてチャットをリセット
+    await this.resetChat(true);
     new Notice('現在のチャットが破棄され、新しいチャットが開始されました。');
   }
 
@@ -306,7 +345,7 @@ participants:
     const previousLogPath = this.logFilePath;
     const previousLlmRoleName = this.llmRoleName;
 
-    this.logFilePath = null; // Initialize log file path to null. It will be created on the first message.
+    this.logFilePath = null;
 
     if (this.chatMessagesEl) {
       this.chatMessagesEl.empty();
@@ -331,12 +370,11 @@ participants:
     if (!skipSummary && previousLogPath && previousLlmRoleName) {
       new Notice(`前のチャットの要約をバックグラウンドで生成開始します: ${previousLogPath}`);
       this.summaryGenerator.generateSummary(previousLogPath, previousLlmRoleName)
-        .then(async (summaryNoteFile: TFile | null) => { // summaryNoteFile に型情報を追加
-          if (summaryNoteFile) { // TFileが返された場合
+        .then(async (summaryNoteFile: TFile | null) => {
+          if (summaryNoteFile) {
             console.log(`[MemoriaChat] Summary generation completed: ${summaryNoteFile.path}`);
             new Notice(`サマリーノートが生成されました: ${summaryNoteFile.basename}`);
             try {
-              // TagProfilerの処理を呼び出し
               await this.tagProfiler.processSummaryNote(summaryNoteFile);
               console.log(`[MemoriaChat] Tag profiling initiated for ${summaryNoteFile.path}`);
               new Notice(`タグプロファイル処理を開始しました: ${summaryNoteFile.basename}`);
@@ -417,15 +455,63 @@ participants:
     if (!this.chainWithHistory) {
       this.appendModelMessage('エラー: チャットチェーンが初期化されていません。プラグイン設定を確認してください。');
       new Notice('チャット機能が利用できません。設定を確認してください。');
-      this.initializeChatModel();
-      if(!this.chainWithHistory) return;
+      this.initializeChatModel(); 
+      if(!this.chainWithHistory) return; 
     }
 
     const loadingMessageEl = this.appendMessage('応答を待っています...', 'loading');
 
+    let retrievedContextString = "記憶からの関連情報は見つかりませんでした。"; 
     try {
+        const currentChatHistoryMessages = await this.messageHistory.getMessages();
+        const retrievedContextResult: RetrievedContext = await this.contextRetriever.retrieveContextForPrompt(
+            trimmedMessageContent,
+            this.llmRoleName,
+            currentChatHistoryMessages 
+        );
+        
+        if (retrievedContextResult.llmContextPrompt && retrievedContextResult.llmContextPrompt.trim() !== "") {
+            retrievedContextString = retrievedContextResult.llmContextPrompt;
+        }
+        
+        // 実際にLLMに渡されるシステムプロンプトの内容（プレースホルダー展開後）をログに出力
+        // ただし、これは invoke 前なので、実際には chainWithHistory が内部で展開する
+        // ここでのログは、渡そうとしている値の確認のため
+        const tempSystemPromptForLogging = (this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian.") + `
+
+## 記憶からの参考情報 (Memory Recall Information):
+${retrievedContextString}
+
+**指示:**
+上記の「記憶からの参考情報」は、あなたとユーザーとの過去の会話や関連ノートから抜粋されたものです。
+現在のユーザーの質問「${trimmedMessageContent}」に回答する際には、この情報を**最優先で考慮し、積極的に活用**してください。
+- 情報がユーザーの質問に直接関連する場合、その情報を基に具体的かつ文脈に沿った応答を生成してください。
+- ユーザーが過去に示した意見、経験、好み（例：好きなもの、嫌いなもの、以前の決定など）が情報に含まれている場合、それを応答に反映させ、一貫性のある対話を目指してください。
+- 情報を参照したことが明確にわかる場合は、「以前お話しいただいた〇〇の件ですが…」や「〇〇がお好きだと記憶していますが…」のように、自然な形で言及してください。
+- もし提供された情報が現在の質問と無関係である、または不正確であると明確に判断できる場合に限り、その情報を無視しても構いません。その際は、なぜ無視したのかを簡潔に説明する必要はありません。
+- 「記憶からの参考情報」が「記憶からの関連情報は見つかりませんでした。」となっている場合は、ユーザーの現在の質問にのみ基づいて応答してください。
+`;
+        console.log("[MemoriaChat] Effective system prompt content being prepared for LLM:", tempSystemPromptForLogging);
+        console.log("[MemoriaChat] Context string to be used in prompt:", retrievedContextString);
+
+
+    } catch (contextError: any) {
+        console.error('[MemoriaChat] Error retrieving context:', contextError.message, contextError.stack);
+        new Notice('記憶情報の取得中にエラーが発生しました。デフォルトのコンテキストを使用します。');
+    }
+
+
+    try {
+      
+      const chainInput = {
+        input: trimmedMessageContent,
+        retrieved_context_string: retrievedContextString 
+      };
+      // invoke前に、実際に渡す chainInput の内容をログに出力
+      console.log("[MemoriaChat] Invoking chain with input:", JSON.stringify(chainInput, null, 2));
+
       const response = await this.chainWithHistory.invoke(
-        { input: trimmedMessageContent },
+        chainInput,
         { configurable: { sessionId: "obsidian-memoria-session" } }
       );
       loadingMessageEl.remove();
