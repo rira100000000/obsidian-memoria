@@ -9,8 +9,8 @@ import { RunnableWithMessageHistory } from "@langchain/core/runnables";
 import {
   ChatPromptTemplate,
   MessagesPlaceholder,
-  SystemMessagePromptTemplate, // 追加
-  HumanMessagePromptTemplate // 追加
+  SystemMessagePromptTemplate,
+  HumanMessagePromptTemplate
 } from "@langchain/core/prompts";
 import { SummaryGenerator } from '../summaryGenerator';
 import { TagProfiler } from '../tagProfiler';
@@ -103,6 +103,11 @@ export class ChatView extends ItemView {
     const baseSystemPrompt = this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian.";
     this.llmRoleName = this.getLlmRoleName(baseSystemPrompt);
 
+    // 現在時刻をシステムプロンプトに含めるための指示を追加
+    const currentTimeInstruction = `
+Current time is {current_time}. Please consider this time when formulating your response, especially if the user's query is time-sensitive.
+`;
+
     const memoryContextInstruction = `
 
 ## 記憶からの参考情報 (Memory Recall Information):
@@ -117,7 +122,8 @@ export class ChatView extends ItemView {
 - もし提供された情報が現在の質問と無関係である、または不正確であると明確に判断できる場合に限り、その情報を無視しても構いません。その際は、なぜ無視したのかを簡潔に説明する必要はありません。
 - 「記憶からの参考情報」が「記憶からの関連情報は見つかりませんでした。」となっている場合は、ユーザーの現在の質問にのみ基づいて応答してください。
 `;
-    const finalSystemPromptTemplate = baseSystemPrompt + memoryContextInstruction; // これはテンプレート文字列
+    // システムプロンプトテンプレートに現在時刻の指示を組み込む
+    const finalSystemPromptTemplate = currentTimeInstruction + baseSystemPrompt + memoryContextInstruction;
 
 
     if (this.settings.geminiApiKey && this.settings.geminiModel) {
@@ -128,6 +134,7 @@ export class ChatView extends ItemView {
         });
 
         // SystemMessage をテンプレートとして定義
+        // finalSystemPromptTemplate は {current_time}, {retrieved_context_string}, {input} を期待する
         const systemMessagePrompt = SystemMessagePromptTemplate.fromTemplate(finalSystemPromptTemplate);
         // HumanMessage をテンプレートとして定義
         const humanMessagePrompt = HumanMessagePromptTemplate.fromTemplate("{input}");
@@ -142,17 +149,12 @@ export class ChatView extends ItemView {
         this.chainWithHistory = new RunnableWithMessageHistory({
             runnable: chain,
             getMessageHistory: (_sessionId) => this.messageHistory,
-            // inputMessagesKey は、invokeに渡すオブジェクトのうち、
-            // HumanMessagePromptTemplate.fromTemplate("{input}") の {input} に対応するキーを指定します。
-            // また、SystemMessagePromptTemplate の {input} にも同じ値が使われます。
-            inputMessagesKey: "input",
+            inputMessagesKey: "input", // {input} に対応
             historyMessagesKey: "history",
-            // retrieved_context_string のような追加の入力変数は、
-            // invoke時に渡すオブジェクトに含め、SystemMessagePromptTemplate がそれを解決します。
+            // chain.invoke に渡すオブジェクトに current_time と retrieved_context_string を含める必要がある
         });
         console.log(`[MemoriaChat] Chat model initialized. LLM Role: ${this.llmRoleName}`);
-        // 実際に使用されるシステムプロンプトテンプレートをログに出力（プレースホルダーは展開前）
-        console.log(`[MemoriaChat] System prompt template being used: ${finalSystemPromptTemplate}`);
+        console.log(`[MemoriaChat] System prompt template being used (includes current_time placeholder): ${finalSystemPromptTemplate}`);
       } catch (error: any) {
         console.error('[MemoriaChat] Failed to initialize ChatGoogleGenerativeAI model or chain:', error.message);
         new Notice('Geminiモデルまたはチャットチェーンの初期化に失敗しました。');
@@ -180,8 +182,8 @@ export class ChatView extends ItemView {
 
   async onOpen() {
     this.settings = this.plugin.settings;
-    this.initializeChatModel(); 
-    this.contextRetriever.onSettingsChanged(); 
+    this.initializeChatModel();
+    this.contextRetriever.onSettingsChanged();
 
     const container = this.containerEl.children[1];
     container.empty();
@@ -298,9 +300,9 @@ participants:
 
   private async confirmAndDiscardChat() {
     const messages = await this.messageHistory.getMessages();
-    if (!this.logFilePath && messages.length <= 1) { 
+    if (!this.logFilePath && messages.length <= 1) {
         new Notice('破棄するチャットログがありません。');
-        await this.resetChat(true); 
+        await this.resetChat(true);
         new Notice('現在のチャット（ログなし）が破棄され、新しいチャットが開始されました。');
         return;
     }
@@ -361,7 +363,7 @@ participants:
     }
 
     console.log('[MemoriaChat] Chat has been reset.');
-    
+
     if (!skipSummary) {
         new Notice('新しいチャットが開始されました。');
     }
@@ -455,29 +457,40 @@ participants:
     if (!this.chainWithHistory) {
       this.appendModelMessage('エラー: チャットチェーンが初期化されていません。プラグイン設定を確認してください。');
       new Notice('チャット機能が利用できません。設定を確認してください。');
-      this.initializeChatModel(); 
-      if(!this.chainWithHistory) return; 
+      this.initializeChatModel();
+      if(!this.chainWithHistory) return;
     }
 
     const loadingMessageEl = this.appendMessage('応答を待っています...', 'loading');
 
-    let retrievedContextString = "記憶からの関連情報は見つかりませんでした。"; 
+    let retrievedContextString = "記憶からの関連情報は見つかりませんでした。";
     try {
         const currentChatHistoryMessages = await this.messageHistory.getMessages();
         const retrievedContextResult: RetrievedContext = await this.contextRetriever.retrieveContextForPrompt(
             trimmedMessageContent,
             this.llmRoleName,
-            currentChatHistoryMessages 
+            currentChatHistoryMessages
         );
-        
+
         if (retrievedContextResult.llmContextPrompt && retrievedContextResult.llmContextPrompt.trim() !== "") {
             retrievedContextString = retrievedContextResult.llmContextPrompt;
         }
-        
-        // 実際にLLMに渡されるシステムプロンプトの内容（プレースホルダー展開後）をログに出力
-        // ただし、これは invoke 前なので、実際には chainWithHistory が内部で展開する
-        // ここでのログは、渡そうとしている値の確認のため
-        const tempSystemPromptForLogging = (this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian.") + `
+
+    } catch (contextError: any) {
+        console.error('[MemoriaChat] Error retrieving context:', contextError.message, contextError.stack);
+        new Notice('記憶情報の取得中にエラーが発生しました。デフォルトのコンテキストを使用します。');
+    }
+
+    // 現在時刻を取得
+    const currentTime = moment().format('YYYY-MM-DD HH:mm:ss dddd'); // 例: 2023-10-27 15:30:00 Friday
+
+    try {
+      // 実際にLLMに渡されるシステムプロンプトの内容（プレースホルダー展開後）をログに出力
+      const baseSystemPrompt = this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian.";
+      const currentTimeInstructionForLog = `
+Current time is ${currentTime}. Please consider this time when formulating your response, especially if the user's query is time-sensitive.
+`;
+      const memoryContextInstructionForLog = `
 
 ## 記憶からの参考情報 (Memory Recall Information):
 ${retrievedContextString}
@@ -491,21 +504,16 @@ ${retrievedContextString}
 - もし提供された情報が現在の質問と無関係である、または不正確であると明確に判断できる場合に限り、その情報を無視しても構いません。その際は、なぜ無視したのかを簡潔に説明する必要はありません。
 - 「記憶からの参考情報」が「記憶からの関連情報は見つかりませんでした。」となっている場合は、ユーザーの現在の質問にのみ基づいて応答してください。
 `;
-        console.log("[MemoriaChat] Effective system prompt content being prepared for LLM:", tempSystemPromptForLogging);
-        console.log("[MemoriaChat] Context string to be used in prompt:", retrievedContextString);
+      const effectiveSystemPromptForLogging = currentTimeInstructionForLog + baseSystemPrompt + memoryContextInstructionForLog;
+      console.log("[MemoriaChat] Effective system prompt content being prepared for LLM:", effectiveSystemPromptForLogging);
+      console.log("[MemoriaChat] Context string to be used in prompt:", retrievedContextString);
+      console.log("[MemoriaChat] Current time string to be used in prompt:", currentTime);
 
 
-    } catch (contextError: any) {
-        console.error('[MemoriaChat] Error retrieving context:', contextError.message, contextError.stack);
-        new Notice('記憶情報の取得中にエラーが発生しました。デフォルトのコンテキストを使用します。');
-    }
-
-
-    try {
-      
       const chainInput = {
         input: trimmedMessageContent,
-        retrieved_context_string: retrievedContextString 
+        retrieved_context_string: retrievedContextString,
+        current_time: currentTime // 現在時刻を渡す
       };
       // invoke前に、実際に渡す chainInput の内容をログに出力
       console.log("[MemoriaChat] Invoking chain with input:", JSON.stringify(chainInput, null, 2));
