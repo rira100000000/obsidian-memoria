@@ -306,54 +306,36 @@ export class TagProfiler {
     tpnFrontmatter.mention_frequency = tagScores[tagName].mention_frequency;
 
     // Construct TPN Body Content from LLM response.
+    // LLM is expected to return the complete, updated lists for contexts and opinions.
     let tpnBodyContent = `# タグプロファイル: {{tag_name}}\n\n`; // Placeholder for tag_name
 
     tpnBodyContent += `## 概要\n\n${parsedLlmData.body_overview || (summaryNoteLanguage === 'Japanese' ? '概要はLLMによって提供されていません。' : 'Overview not provided by LLM.')}\n\n`;
 
     tpnBodyContent += `## これまでの主な文脈\n\n`;
-    // The LLM is expected to integrate new context with historical ones.
-    // This simplified logic assumes parsedLlmData.body_contexts contains the merged list.
-    const allContexts: { summary_note_link: string; context_summary: string }[] = [];
     if (parsedLlmData.body_contexts && parsedLlmData.body_contexts.length > 0) {
-        allContexts.push(...parsedLlmData.body_contexts);
-    } else {
-        // Fallback if LLM provides no contexts.
-        allContexts.push({
-            summary_note_link: `[[${summaryNoteFile.name}]]`, // Corrected: Use summaryNoteFile.name
-            context_summary: summaryNoteFrontmatter.title || (summaryNoteLanguage === 'Japanese' ? 'このサマリーノートの文脈' : 'Context from this summary note')
-        });
-    }
-    // Format unique contexts.
-    const uniqueContextLinks = new Set<string>();
-    allContexts.forEach(ctx => {
-        if (!uniqueContextLinks.has(ctx.summary_note_link)) {
-            // Extract date from summary note link for display.
-            const datePart = ctx.summary_note_link.match(/SN-(\d{8})\d{4}-/);
-            const displayDate = datePart ? moment(datePart[1], "YYYYMMDD").format("YYYY/MM/DD") : (summaryNoteLanguage === 'Japanese' ? '不明な日付' : 'Unknown Date');
+        parsedLlmData.body_contexts.forEach(ctx => {
+            const datePartMatch = ctx.summary_note_link.match(/SN-(\d{8})\d{4}-/);
+            const displayDate = datePartMatch && datePartMatch[1] 
+                ? moment(datePartMatch[1], "YYYYMMDD").format("YYYY/MM/DD") 
+                : (summaryNoteLanguage === 'Japanese' ? '日付不明' : 'Unknown Date');
             tpnBodyContent += `- **${displayDate} ${ctx.summary_note_link}**: ${ctx.context_summary}\n`;
-            uniqueContextLinks.add(ctx.summary_note_link);
-        }
-    });
+        });
+    } else {
+        // Fallback if LLM provides no contexts, or for a brand new TPN.
+        const fallbackDate = moment(summaryNoteFrontmatter.date, "YYYY-MM-DD HH:MM").format("YYYY/MM/DD");
+        tpnBodyContent += `- **${fallbackDate} [[${summaryNoteFile.name}]]**: ${summaryNoteFrontmatter.title || (summaryNoteLanguage === 'Japanese' ? 'このサマリーノートの文脈' : 'Context from this summary note')}\n`;
+    }
     tpnBodyContent += `\n`;
 
     tpnBodyContent += `## ユーザーの意見・反応\n\n`;
-    // Similar logic for user opinions.
-    const allOpinions: { summary_note_link: string; user_opinion: string }[] = [];
-     if (parsedLlmData.body_user_opinions && parsedLlmData.body_user_opinions.length > 0) {
-        allOpinions.push(...parsedLlmData.body_user_opinions);
-    } else {
-        allOpinions.push({
-            summary_note_link: `[[${summaryNoteFile.name}]]`, // Corrected: Use summaryNoteFile.name
-            user_opinion: summaryNoteLanguage === 'Japanese' ? 'このサマリーノートでのユーザーの意見・反応。' : "User's opinion/reaction in this summary note."
-        });
-    }
-    const uniqueOpinionLinks = new Set<string>();
-    allOpinions.forEach(op => {
-        if (!uniqueOpinionLinks.has(op.summary_note_link)) {
+    if (parsedLlmData.body_user_opinions && parsedLlmData.body_user_opinions.length > 0) {
+        parsedLlmData.body_user_opinions.forEach(op => {
             tpnBodyContent += `- **${op.summary_note_link}**: ${op.user_opinion}\n`;
-            uniqueOpinionLinks.add(op.summary_note_link);
-        }
-    });
+        });
+    } else {
+        // Fallback if LLM provides no opinions, or for a brand new TPN.
+        tpnBodyContent += `- **[[${summaryNoteFile.name}]]**: ${summaryNoteLanguage === 'Japanese' ? 'このサマリーノートでのユーザーの意見・反応。' : "User's opinion/reaction in this summary note."}\n`;
+    }
     tpnBodyContent += `\n`;
 
     tpnBodyContent += `## その他メモ\n\n${parsedLlmData.body_other_notes || (summaryNoteLanguage === 'Japanese' ? '特記事項なし。' : 'No additional notes.')}\n`;
@@ -400,11 +382,48 @@ export class TagProfiler {
     currentSummaryNoteFileName: string,
     currentSummaryNoteContent: string,
     existingTpnContent: string | null,
-    currentTpnFrontmatter: TagProfilingNoteFrontmatter,
+    currentTpnFrontmatter: TagProfilingNoteFrontmatter, // This is the most up-to-date frontmatter before LLM call
     noteLanguage: string
   ): string {
     const today = moment().format('YYYY-MM-DD HH:MM');
-    // This is the updated prompt based on the user's request
+
+    // Extract existing contexts and opinions from existingTpnContent if available
+    let existingContextsString = "[]"; // Default to empty JSON array string
+    let existingOpinionsString = "[]";
+
+    if (existingTpnContent) {
+        const contextSectionMatch = existingTpnContent.match(/## これまでの主な文脈\s*([\s\S]*?)(?=\n## ユーザーの意見・反応|\n## その他メモ|$)/);
+        if (contextSectionMatch && contextSectionMatch[1]) {
+            const contextEntries = [];
+            const contextLines = contextSectionMatch[1].trim().split('\n');
+            for (const line of contextLines) {
+                const entryMatch = line.match(/- \*\*(?:.+?\s+)?(\[\[SN-.+?\.md\]\])\*\*: (.*)/);
+                if (entryMatch) {
+                    contextEntries.push({ summary_note_link: entryMatch[1], context_summary: entryMatch[2].trim() });
+                }
+            }
+            if (contextEntries.length > 0) {
+              existingContextsString = JSON.stringify(contextEntries, null, 2);
+            }
+        }
+
+        const opinionSectionMatch = existingTpnContent.match(/## ユーザーの意見・反応\s*([\s\S]*?)(?=\n## その他メモ|$)/);
+        if (opinionSectionMatch && opinionSectionMatch[1]) {
+            const opinionEntries = [];
+            const opinionLines = opinionSectionMatch[1].trim().split('\n');
+            for (const line of opinionLines) {
+                const entryMatch = line.match(/- \*\*(\[\[SN-.+?\.md\]\])\*\*: (.*)/);
+                 if (entryMatch) {
+                    opinionEntries.push({ summary_note_link: entryMatch[1], user_opinion: entryMatch[2].trim() });
+                }
+            }
+             if (opinionEntries.length > 0) {
+                existingOpinionsString = JSON.stringify(opinionEntries, null, 2);
+            }
+        }
+    }
+
+
     const prompt = `
 You are an AI assistant specializing in knowledge management and text analysis within Obsidian.
 Your task is to create or update a Tag Profiling Note (TPN) for the tag "${tagName}".
@@ -422,17 +441,27 @@ The TPN helps understand the meaning, context, and importance of this tag *speci
         ${currentSummaryNoteContent}
         \`\`\`
 
-2.  **Existing Tag Profiling Note (TPN) for "${tagName}" (if available):**
+2.  **Existing Tag Profiling Note (TPN) for "${tagName}" (Full Content, if available):**
     ${existingTpnContent ? `\`\`\`markdown\n${existingTpnContent}\n\`\`\`` : "`None - This is a new TPN.`"}
 
-3.  **Current TPN Frontmatter (for reference, especially for 'created_date' and existing 'summary_notes'):**
+3.  **Parsed Existing TPN Body Data (if available, for your reference to construct updated lists):**
+    * Existing "body_contexts" (as JSON array):
+        \`\`\`json
+        ${existingContextsString}
+        \`\`\`
+    * Existing "body_user_opinions" (as JSON array):
+        \`\`\`json
+        ${existingOpinionsString}
+        \`\`\`
+
+4.  **Current TPN Frontmatter (for reference, especially for 'created_date' and existing 'summary_notes'):**
     \`\`\`yaml
     ${stringifyYaml(currentTpnFrontmatter)}
     \`\`\`
 
 **Instructions:**
 
-Based on ALL the provided information (Current SN, Existing TPN, Current TPN Frontmatter), generate a complete JSON object that represents the *updated* or *new* Tag Profiling Note for "${tagName}".
+Based on ALL the provided information (Current SN, Existing TPN full content, Parsed Existing TPN Body Data, Current TPN Frontmatter), generate a complete JSON object that represents the *updated* or *new* Tag Profiling Note for "${tagName}".
 When updating, consider the existing TPN content as historical fact and integrate the new information from the Current SN to reflect the *current* understanding and significance of the tag from the user's perspective.
 
 **Output JSON Format:**
@@ -442,34 +471,39 @@ The JSON object MUST follow this structure precisely. All textual content MUST b
 \`\`\`json
 {
   "tag_name": "${tagName}",
-  "aliases": ["<list of aliases or related terms in ${noteLanguage}>"],
-  "key_themes": ["<list of key themes/concepts related to this tag, derived from all available info, in ${noteLanguage}>"],
-  "user_sentiment_overall": "<'Positive', 'Negative', 'Neutral', or ${noteLanguage} equivalent, based on overall user interactions related to this tag>",
-  "user_sentiment_details": ["<specific examples or links to conversations showing sentiment, e.g., 'User expressed excitement in [[${currentSummaryNoteFileName}]] about X', in ${noteLanguage}>"],
-  "master_significance": "<Provide a comprehensive summary of what this tag means *specifically to the user (master)* and its significance *within their interactions with you (the LLM)*. This should synthesize information from the Current SN and historical TPN data to reflect the most current and nuanced understanding. For common concepts like 'money' or 'love', *avoid general, dictionary-like definitions*. Instead, concentrate on: How has the user valued or prioritized this concept? What specific dilemmas, goals, or perspectives related to this tag have emerged in your conversations? How have you, as the LLM, engaged with these user-specific aspects? This entire description MUST be in ${noteLanguage}>",
-  "related_tags": ["<list of other relevant TPN tag names (without 'TPN-' prefix), e.g., 'RelatedTag1', 'AnotherConcept', in ${noteLanguage}>"],
-  "body_overview": "<Provide an overview of how this tag or concept is specifically approached, understood, or utilized *within the context of the user's interactions with you (the LLM)*. If the tag represents a common concept, *do not provide a generic definition*. Instead, describe its particular relevance and recurring themes as observed in your conversations. For example, what kinds of discussions typically involve this tag? What is its function or role in the dialogue (e.g., a recurring problem, a goal, a point of reflection)? This section should summarize the *local and specific understanding* of the tag derived from your interactions. This MUST be in ${noteLanguage}>",
+  "aliases": ["<list of aliases or related terms in ${noteLanguage}, merged from existing and new if applicable>"],
+  "key_themes": ["<list of key themes/concepts related to this tag, derived from all available info, in ${noteLanguage}, merged and updated>"],
+  "user_sentiment_overall": "<'Positive', 'Negative', 'Neutral', or ${noteLanguage} equivalent, based on overall user interactions related to this tag, updated if necessary>",
+  "user_sentiment_details": ["<specific examples or links to conversations showing sentiment, e.g., 'User expressed excitement in [[${currentSummaryNoteFileName}]] about X', in ${noteLanguage}, new details added, old ones potentially summarized or kept if still relevant>"],
+  "master_significance": "<Provide a comprehensive summary of what this tag means *specifically to the user (master)* and its significance *within their interactions with you (the LLM)*. This should synthesize information from the Current SN and historical TPN data to reflect the most current and nuanced understanding. For common concepts like 'money' or 'love', *avoid general, dictionary-like definitions*. Instead, concentrate on: How has the user valued or prioritized this concept? What specific dilemmas, goals, or perspectives related to this tag have emerged in your conversations? How have you, as the LLM, engaged with these user-specific aspects? This entire description MUST be in ${noteLanguage}. This field should be an update of any existing significance, not just an addition.>",
+  "related_tags": ["<list of other relevant TPN tag names (without 'TPN-' prefix), e.g., 'RelatedTag1', 'AnotherConcept', in ${noteLanguage}, merged and updated>"],
+  "body_overview": "<Provide an overview of how this tag or concept is specifically approached, understood, or utilized *within the context of the user's interactions with you (the LLM)*. If the tag represents a common concept, *do not provide a generic definition*. Instead, describe its particular relevance and recurring themes as observed in your conversations. For example, what kinds of discussions typically involve this tag? What is its function or role in the dialogue (e.g., a recurring problem, a goal, a point of reflection)? This section should summarize the *local and specific understanding* of the tag derived from your interactions. This MUST be in ${noteLanguage}. This field should be an update of any existing overview.>",
   "body_contexts": [
-    {
-      "summary_note_link": "[[${currentSummaryNoteFileName}]]",
-      "context_summary": "<briefly describe the context in which '${tagName}' appeared in the Current SN, focusing on the specifics of that conversation, in ${noteLanguage}>"
-    }
+    // This list should be the COMPLETE, UPDATED list of contexts.
+    // Start with the new context from the Current SN.
+    // Then, append all unique historical contexts from the 'Parsed Existing TPN Body Data' (body_contexts).
+    // Example:
+    // { "summary_note_link": "[[${currentSummaryNoteFileName}]]", "context_summary": "<briefly describe the context in which '${tagName}' appeared in the Current SN, in ${noteLanguage}>" },
+    // { "summary_note_link": "[[OlderSN-1.md]]", "context_summary": "<Context from older SN 1, preserved from existing TPN>" }
   ],
   "body_user_opinions": [
-    {
-      "summary_note_link": "[[${currentSummaryNoteFileName}]]",
-      "user_opinion": "<describe user's opinion/reaction regarding '${tagName}' in the Current SN, as expressed in that specific conversation, in ${noteLanguage}>"
-    }
+    // This list should be the COMPLETE, UPDATED list of user opinions.
+    // Start with the new user opinion from the Current SN.
+    // Then, append all unique historical opinions from the 'Parsed Existing TPN Body Data' (body_user_opinions).
+    // Example:
+    // { "summary_note_link": "[[${currentSummaryNoteFileName}]]", "user_opinion": "<describe user's opinion/reaction regarding '${tagName}' in the Current SN, in ${noteLanguage}>" },
+    // { "summary_note_link": "[[OlderSN-1.md]]", "user_opinion": "<User opinion from older SN 1, preserved from existing TPN>" }
   ],
-  "body_other_notes": "<any other relevant notes, observations, or unresolved questions about this tag from the user's perspective, in ${noteLanguage}>",
+  "body_other_notes": "<any other relevant notes, observations, or unresolved questions about this tag from the user's perspective, in ${noteLanguage}. This should be an update of any existing notes, integrating new insights.>",
   "new_base_importance": "<integer between 0-100, representing your assessment of the tag's current importance to the user. Consider its frequency, user sentiment, and overall significance. If unsure, provide the current importance from tag_scores.json or a default like 50. This is a long-term perspective. If the tag's importance has significantly changed, update this value.>"
 }
 \`\`\`
 
 **Important Considerations for Updating (if existing TPN is provided):**
 
-* **Evolution of Meaning:** The 'master_significance', 'key_themes', and 'body_overview' should evolve. Don't just append; synthesize the information to reflect the ongoing user-LLM understanding.
-* **Historical Context:** 'body_contexts' and 'body_user_opinions' should accumulate. Add new entries from the Current SN. When summarizing older entries from the existing TPN, ensure they retain their original conversational context and user-specific meaning.
+* **Synthesize, Don't Just Append (for overview sections):** 'master_significance', 'key_themes', and 'body_overview' should evolve. Integrate new information with old to reflect current understanding.
+* **Accumulate and Prepend (for list sections):** For 'body_contexts' and 'body_user_opinions', ensure all historical entries (from "Parsed Existing TPN Body Data") are preserved. Add the new entry from the Current SN to the *beginning* of each list. Ensure no duplicate entries based on 'summary_note_link'.
+* **Language Consistency:** All textual output in the JSON MUST be in ${noteLanguage}.
 * **base_importance:** Evaluate if the tag's importance (0-100) to the user has changed based on the new SN. Provide an updated integer value if a change is warranted from a long-term perspective.
 
 **Output:**
