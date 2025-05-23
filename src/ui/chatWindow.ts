@@ -15,6 +15,8 @@ import {
 import { SummaryGenerator } from '../summaryGenerator';
 import { TagProfiler } from '../tagProfiler';
 import { ContextRetriever, RetrievedContext } from '../contextRetriever';
+import { LocationFetcher } from '../locationFetcher'; // LocationFetcherをインポート
+import { IpLocationInfo } from '../types'; // IpLocationInfo型をインポート
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
@@ -62,6 +64,7 @@ export class ChatView extends ItemView {
   private chatModel: ChatGoogleGenerativeAI | null = null;
   private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
   private contextRetriever: ContextRetriever;
+  private locationFetcher: LocationFetcher; // LocationFetcherのインスタンスを保持
 
   private logFilePath: string | null = null;
   private llmRoleName = 'Assistant';
@@ -75,6 +78,7 @@ export class ChatView extends ItemView {
     this.summaryGenerator = new SummaryGenerator(this.plugin);
     this.tagProfiler = new TagProfiler(this.plugin);
     this.contextRetriever = new ContextRetriever(this.plugin);
+    this.locationFetcher = new LocationFetcher(this.plugin); // LocationFetcherを初期化
   }
 
   private getLlmRoleName(systemPrompt: string): string {
@@ -103,9 +107,15 @@ export class ChatView extends ItemView {
     const baseSystemPrompt = this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian.";
     this.llmRoleName = this.getLlmRoleName(baseSystemPrompt);
 
-    // 現在時刻をシステムプロンプトに含めるための指示を追加
     const currentTimeInstruction = `
 Current time is {current_time}. Please consider this time when formulating your response, especially if the user's query is time-sensitive.
+`;
+    // 現在地情報をシステムプロンプトに含めるための指示を追加
+    const locationInstruction = `
+
+## 現在の推定位置情報 (Current Estimated Location Information):
+{current_location_string}
+この位置情報も応答を生成する際の参考にしてください。特に、ユーザーが場所に関連する質問をした場合や、地域に基づいた情報が役立つ場合に活用してください。
 `;
 
     const memoryContextInstruction = `
@@ -115,14 +125,15 @@ Current time is {current_time}. Please consider this time when formulating your 
 
 **指示:**
 上記の「記憶からの参考情報」は、あなたとユーザーとの過去の会話や関連ノートから抜粋されたものです。
-現在のユーザーの入力「{input}」に回答する際には、この情報を**最優先で考慮し、積極的に活用**してください。
-- 情報がユーザーの入力に直接関連する場合、その情報を基に具体的かつ文脈に沿った応答を生成してください。
+現在のユーザーの質問「{input}」に回答する際には、この情報を**最優先で考慮し、積極的に活用**してください。
+- 情報がユーザーの質問に直接関連する場合、その情報を基に具体的かつ文脈に沿った応答を生成してください。
 - ユーザーが過去に示した意見、経験、好み（例：好きなもの、嫌いなもの、以前の決定など）が情報に含まれている場合、それを応答に反映させ、一貫性のある対話を目指してください。
-- 「記憶からの参考情報」が「記憶からの関連情報は見つかりませんでした。」となっている場合は、過去の記憶が存在しているような振る舞いをしないでください。
+- 情報を参照したことが明確にわかる場合は、「以前お話しいただいた〇〇の件ですが…」や「〇〇がお好きだと記憶していますが…」のように、自然な形で言及してください。
 - もし提供された情報が現在の質問と無関係である、または不正確であると明確に判断できる場合に限り、その情報を無視しても構いません。その際は、なぜ無視したのかを簡潔に説明する必要はありません。
+- 「記憶からの参考情報」が「記憶からの関連情報は見つかりませんでした。」となっている場合は、ユーザーの現在の質問にのみ基づいて応答してください。
 `;
-    // システムプロンプトテンプレートに現在時刻の指示を組み込む
-    const finalSystemPromptTemplate = currentTimeInstruction + baseSystemPrompt + memoryContextInstruction;
+    // システムプロンプトテンプレートに現在時刻と現在地の指示を組み込む
+    const finalSystemPromptTemplate = currentTimeInstruction + locationInstruction + baseSystemPrompt + memoryContextInstruction;
 
 
     if (this.settings.geminiApiKey && this.settings.geminiModel) {
@@ -132,10 +143,7 @@ Current time is {current_time}. Please consider this time when formulating your 
           model: this.settings.geminiModel,
         });
 
-        // SystemMessage をテンプレートとして定義
-        // finalSystemPromptTemplate は {current_time}, {retrieved_context_string}, {input} を期待する
         const systemMessagePrompt = SystemMessagePromptTemplate.fromTemplate(finalSystemPromptTemplate);
-        // HumanMessage をテンプレートとして定義
         const humanMessagePrompt = HumanMessagePromptTemplate.fromTemplate("{input}");
 
         const prompt = ChatPromptTemplate.fromMessages([
@@ -148,12 +156,11 @@ Current time is {current_time}. Please consider this time when formulating your 
         this.chainWithHistory = new RunnableWithMessageHistory({
             runnable: chain,
             getMessageHistory: (_sessionId) => this.messageHistory,
-            inputMessagesKey: "input", // {input} に対応
+            inputMessagesKey: "input",
             historyMessagesKey: "history",
-            // chain.invoke に渡すオブジェクトに current_time と retrieved_context_string を含める必要がある
         });
         console.log(`[MemoriaChat] Chat model initialized. LLM Role: ${this.llmRoleName}`);
-        console.log(`[MemoriaChat] System prompt template being used (includes current_time placeholder): ${finalSystemPromptTemplate}`);
+        console.log(`[MemoriaChat] System prompt template being used (includes current_time, current_location placeholders): ${finalSystemPromptTemplate}`);
       } catch (error: any) {
         console.error('[MemoriaChat] Failed to initialize ChatGoogleGenerativeAI model or chain:', error.message);
         new Notice('Geminiモデルまたはチャットチェーンの初期化に失敗しました。');
@@ -172,6 +179,7 @@ Current time is {current_time}. Please consider this time when formulating your 
     this.summaryGenerator.onSettingsChanged();
     this.tagProfiler.onSettingsChanged();
     this.contextRetriever.onSettingsChanged();
+    // LocationFetcherは現状設定に依存しないため、再初期化は不要
     console.log('[MemoriaChat] Settings changed, all relevant modules re-initialized.');
   }
 
@@ -182,7 +190,7 @@ Current time is {current_time}. Please consider this time when formulating your 
   async onOpen() {
     this.settings = this.plugin.settings;
     this.initializeChatModel();
-    this.contextRetriever.onSettingsChanged();
+    this.contextRetriever.onSettingsChanged(); // ContextRetrieverは設定に依存するため再初期化
 
     const container = this.containerEl.children[1];
     container.empty();
@@ -299,9 +307,9 @@ participants:
 
   private async confirmAndDiscardChat() {
     const messages = await this.messageHistory.getMessages();
-    if (!this.logFilePath && messages.length <= 1) {
+    if (!this.logFilePath && messages.length <= 1) { // 初期AIメッセージのみの場合も考慮
         new Notice('破棄するチャットログがありません。');
-        await this.resetChat(true);
+        await this.resetChat(true); // ログなしでリセット
         new Notice('現在のチャット（ログなし）が破棄され、新しいチャットが開始されました。');
         return;
     }
@@ -325,9 +333,9 @@ participants:
                 await this.app.vault.delete(logFile);
                 new Notice(`チャットログファイル ${this.logFilePath} を削除しました。`);
                 console.log(`[MemoriaChat] Deleted log file: ${this.logFilePath}`);
-            } catch (error) {
+            } catch (error: any) {
                 new Notice(`チャットログファイル ${this.logFilePath} の削除に失敗しました。`);
-                console.error(`[MemoriaChat] Error deleting log file ${this.logFilePath}:`, error);
+                console.error(`[MemoriaChat] Error deleting log file ${this.logFilePath}:`, error.message);
             }
         } else {
             new Notice(`チャットログファイル ${this.logFilePath} が見つかりませんでした。UIはリセットされます。`);
@@ -337,7 +345,7 @@ participants:
     } else {
         console.log('[MemoriaChat] No log file path set, resetting UI and history.');
     }
-    await this.resetChat(true);
+    await this.resetChat(true); // ログなしでリセット
     new Notice('現在のチャットが破棄され、新しいチャットが開始されました。');
   }
 
@@ -351,7 +359,7 @@ participants:
     if (this.chatMessagesEl) {
       this.chatMessagesEl.empty();
     }
-    this.messageHistory = new ChatMessageHistory();
+    this.messageHistory = new ChatMessageHistory(); // メッセージ履歴をクリア
     this.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');
     this.scrollToBottom();
 
@@ -363,7 +371,7 @@ participants:
 
     console.log('[MemoriaChat] Chat has been reset.');
 
-    if (!skipSummary) {
+    if (!skipSummary) { // skipSummaryがfalseの場合のみ通知
         new Notice('新しいチャットが開始されました。');
     }
 
@@ -426,6 +434,12 @@ participants:
       return;
     }
 
+    const messages = await this.messageHistory.getMessages();
+    // 初期AIメッセージを除いた実質的なユーザーメッセージの数をカウント
+    const userMessageCount = messages.filter(msg => msg._getType() === "human").length;
+    const isFirstActualUserMessage = userMessageCount === 0;
+
+
     if (!this.logFilePath) {
         await this.setupLogging();
         if (!this.logFilePath) {
@@ -456,8 +470,8 @@ participants:
     if (!this.chainWithHistory) {
       this.appendModelMessage('エラー: チャットチェーンが初期化されていません。プラグイン設定を確認してください。');
       new Notice('チャット機能が利用できません。設定を確認してください。');
-      this.initializeChatModel();
-      if(!this.chainWithHistory) return;
+      this.initializeChatModel(); // 再度初期化を試みる
+      if(!this.chainWithHistory) return; // それでもダメなら中止
     }
 
     const loadingMessageEl = this.appendMessage('応答を待っています...', 'loading');
@@ -480,14 +494,46 @@ participants:
         new Notice('記憶情報の取得中にエラーが発生しました。デフォルトのコンテキストを使用します。');
     }
 
-    // 現在時刻を取得
-    const currentTime = moment().format('YYYY-MM-DD HH:mm:ss dddd'); // 例: 2023-10-27 15:30:00 Friday
+    const currentTime = moment().format('YYYY-MM-DD HH:mm:ss dddd');
+    let currentLocationString = "現在地の取得に失敗しました。";
+
+    if (isFirstActualUserMessage) {
+        try {
+            const ipInfo: IpLocationInfo | null = await this.locationFetcher.fetchCurrentIpLocation();
+            if (ipInfo && ipInfo.status === 'success') {
+                const formattedLocation = this.locationFetcher.formatIpLocationForContext(ipInfo);
+                if (formattedLocation) {
+                    currentLocationString = `現在のあなたの推定位置は、都市: ${formattedLocation.city || '不明'}, 地域: ${formattedLocation.regionName || '不明'}, 国: ${formattedLocation.country || '不明'} (タイムゾーン: ${formattedLocation.timezone || '不明'}) です。`;
+                    // if (this.plugin.settings.showLocationInChat) { // 設定で表示/非表示を切り替えられるようにする場合
+                    //     new Notice(`現在地情報: ${formattedLocation.city}, ${formattedLocation.country}`, 3000);
+                    // }
+                } else {
+                    currentLocationString = "現在地の詳細フォーマットに失敗しました。";
+                }
+            } else if (ipInfo && ipInfo.message) {
+                currentLocationString = `現在地の取得に失敗しました: ${ipInfo.message}`;
+            }
+            console.log(`[MemoriaChat] Location for first message: ${currentLocationString}`);
+        } catch (locationError: any) {
+            console.error('[MemoriaChat] Error fetching location for first message:', locationError.message);
+            currentLocationString = "現在地の取得中にエラーが発生しました。";
+        }
+    } else {
+        // 最初のメッセージでない場合は、プレースホルダーにデフォルト値を設定するか、空にする
+        currentLocationString = "（現在地情報は最初のメッセージでのみ提供されます）";
+    }
+
 
     try {
-      // 実際にLLMに渡されるシステムプロンプトの内容（プレースホルダー展開後）をログに出力
       const baseSystemPrompt = this.settings.systemPrompt || "You are a helpful assistant integrated into Obsidian.";
       const currentTimeInstructionForLog = `
 Current time is ${currentTime}. Please consider this time when formulating your response, especially if the user's query is time-sensitive.
+`;
+      const locationInstructionForLog = `
+
+## 現在の推定位置情報 (Current Estimated Location Information):
+${currentLocationString}
+この位置情報も応答を生成する際の参考にしてください。特に、ユーザーが場所に関連する質問をした場合や、地域に基づいた情報が役立つ場合に活用してください。
 `;
       const memoryContextInstructionForLog = `
 
@@ -503,18 +549,16 @@ ${retrievedContextString}
 - もし提供された情報が現在の質問と無関係である、または不正確であると明確に判断できる場合に限り、その情報を無視しても構いません。その際は、なぜ無視したのかを簡潔に説明する必要はありません。
 - 「記憶からの参考情報」が「記憶からの関連情報は見つかりませんでした。」となっている場合は、ユーザーの現在の質問にのみ基づいて応答してください。
 `;
-      const effectiveSystemPromptForLogging = currentTimeInstructionForLog + baseSystemPrompt + memoryContextInstructionForLog;
+      const effectiveSystemPromptForLogging = currentTimeInstructionForLog + locationInstructionForLog + baseSystemPrompt + memoryContextInstructionForLog;
       console.log("[MemoriaChat] Effective system prompt content being prepared for LLM:", effectiveSystemPromptForLogging);
-      console.log("[MemoriaChat] Context string to be used in prompt:", retrievedContextString);
-      console.log("[MemoriaChat] Current time string to be used in prompt:", currentTime);
 
 
       const chainInput = {
         input: trimmedMessageContent,
         retrieved_context_string: retrievedContextString,
-        current_time: currentTime // 現在時刻を渡す
+        current_time: currentTime,
+        current_location_string: currentLocationString, // 現在地情報を渡す
       };
-      // invoke前に、実際に渡す chainInput の内容をログに出力
       console.log("[MemoriaChat] Invoking chain with input:", JSON.stringify(chainInput, null, 2));
 
       const response = await this.chainWithHistory.invoke(

@@ -99,3 +99,68 @@ export interface LlmContextEvaluationResponse {
   next_summary_notes_to_fetch?: string[];
   requires_full_log_for_summary_note?: string;
 }
+
+// --- LocationFetcher で使用する型定義 ---
+
+/**
+ * ip-api.com から返されるJSONレスポンスの型定義。
+ * 詳細は http://ip-api.com/docs/api:json を参照。
+ */
+export interface IpLocationInfo {
+  status: 'success' | 'fail';
+  message?: string; // statusがfailの場合に存在
+  country?: string;
+  countryCode?: string;
+  region?: string;
+  regionName?: string;
+  city?: string;
+  zip?: string;
+  lat?: number;
+  lon?: number;
+  timezone?: string;
+  isp?: string;
+  org?: string;
+  as?: string;
+  query?: string; // 送信されたIPアドレス
+}
+
+/**
+ * 天気情報API (Open-Meteo) から返される情報の簡易的な型。
+ * 必要な情報のみを定義。
+ */
+export interface WeatherInfo {
+  latitude: number;
+  longitude: number;
+  current_weather: {
+    temperature: number;
+    weathercode: number;
+    windspeed: number;
+    time: string; // ISO 8601 format
+  };
+  // 他にも hourly や daily のデータがあるが、ここでは省略
+}
+
+/**
+ * LocationFetcherが返す、整形された位置情報と天気情報。
+ */
+export interface CurrentContextualInfo {
+  location?: {
+    city?: string;
+    regionName?: string;
+    country?: string;
+    latitude?: number;
+    longitude?: number;
+    timezone?: string;
+  };
+  weather?: {
+    temperature?: number;
+    description?: string; // 天気コードから変換した説明
+    windspeed?: number;
+    time?: string;
+  };
+  error?: string; // エラーが発生した場合のメッセージ
+  attribution?: { // API利用の帰属表示
+    locationService?: string;
+    weatherService?: string;
+  }
+}
