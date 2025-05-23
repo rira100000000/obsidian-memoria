@@ -6,13 +6,13 @@ import { ApiInfoModal } from './ui/apiInfoModal'; // ApiInfoModalをインポー
 export interface GeminiPluginSettings {
   geminiModel: string;
   geminiApiKey: string;
-  systemPrompt: string;
+  systemPrompt: string; // キャラクター設定専用に変更
   keywordExtractionModel: string;
   maxContextLength: number;
   maxContextLengthForEvaluation: number;
   maxTagsToRetrieve: number;
-  showLocationInChat: boolean; // チャットUIに位置情報をNoticeで表示するかの設定
-  showWeatherInChat: boolean;  // チャットUIに天気情報をNoticeで表示するかの設定
+  showLocationInChat: boolean;
+  showWeatherInChat: boolean;
   prompts?: {
     keywordExtractionPrompt?: string;
     contextEvaluationPromptBase?: string;
@@ -22,7 +22,8 @@ export interface GeminiPluginSettings {
 export const DEFAULT_SETTINGS: GeminiPluginSettings = {
   geminiModel: 'gemini-1.5-flash-latest',
   geminiApiKey: '',
-  systemPrompt: "You are a helpful assistant integrated into Obsidian. When answering, consider the 'Memory Recall Information' provided below, which is excerpted from past conversations and related notes. Use this information to provide more contextually relevant and consistent responses. If the information seems inaccurate or irrelevant to the current conversation, you don't need to force its use. Aim for a continuous interaction by reflecting the user's past opinions, events, or preferences. If you explicitly refer to memory information, you can subtly suggest it, like 'Regarding the matter of X we discussed earlier...'.",
+  // systemPrompt はキャラクター設定（名前、性格、一人称、口調など）を記述する場所に変更
+  systemPrompt: "名前：アシスタント\n性格：親切で丁寧\n一人称：私\n口調：ですます調\n（ここにキャラクターの背景、好きなこと、嫌いなこと、行動指針などを自由に記述してください）",
   keywordExtractionModel: 'gemini-1.5-flash-latest',
   maxContextLength: 3500,
   maxContextLengthForEvaluation: 3500,
@@ -73,19 +74,19 @@ export class MemoriaSettingTab extends PluginSettingTab {
         .inputEl.setAttribute('type', 'password'));
 
     new Setting(containerEl)
-      .setName('System Prompt (Base)')
-      .setDesc('Set the base system prompt for the AI. Memory recall instructions will be appended to this.')
+      .setName('Character Setting Prompt') // 名称を変更
+      .setDesc('Set the character settings for the AI (name, personality, speaking style, etc.). Basic role-playing rules are predefined by the plugin.') // 説明を変更
       .addTextArea((text: TextAreaComponent) => {
         text
-          .setPlaceholder('Example: You are a helpful assistant.')
+          .setPlaceholder('Example:\nName: Assistant\nPersonality: Kind and polite\nFirst person: I\nTone: Formal\n(Describe character background, likes, dislikes, principles, etc.)') // Placeholder を更新
           .setValue(this.plugin.settings.systemPrompt)
           .onChange(async (value) => {
             this.plugin.settings.systemPrompt = value;
             await this.plugin.saveSettings();
           });
-        text.inputEl.rows = 5;
+        text.inputEl.rows = 8; // 行数を増やすと入力しやすいかもしれません
         text.inputEl.style.width = '100%';
-        text.inputEl.style.minHeight = '100px';
+        text.inputEl.style.minHeight = '120px';
       });
 
     containerEl.createEl('h3', { text: 'Memory Recall Settings' });
@@ -100,7 +101,7 @@ export class MemoriaSettingTab extends PluginSettingTab {
           this.plugin.settings.keywordExtractionModel = value;
           await this.plugin.saveSettings();
         }));
-    
+
     let maxTagsSlider: SliderComponent;
     const maxTagsSetting = new Setting(containerEl)
         .setName('Max Tags to Retrieve')
@@ -126,7 +127,7 @@ export class MemoriaSettingTab extends PluginSettingTab {
         .addSlider(slider => {
             maxContextLengthSlider = slider;
             slider
-                .setLimits(1000, 10000, 100)
+                .setLimits(1000, 10000, 100) // 1000から10000文字、ステップ100
                 .setValue(this.plugin.settings.maxContextLength)
                 .setDynamicTooltip()
                 .onChange(async (value) => {
@@ -143,7 +144,7 @@ export class MemoriaSettingTab extends PluginSettingTab {
         .addSlider(slider => {
             maxContextLengthForEvalSlider = slider;
             slider
-                .setLimits(1000, 10000, 100)
+                .setLimits(1000, 10000, 100) // 1000から10000文字、ステップ100
                 .setValue(this.plugin.settings.maxContextLengthForEvaluation)
                 .setDynamicTooltip()
                 .onChange(async (value) => {
@@ -179,7 +180,7 @@ export class MemoriaSettingTab extends PluginSettingTab {
         .addButton(button => button
             .setButtonText('Show API Information')
             .onClick(() => {
-                if (this.plugin.locationFetcher) {
+                if (this.plugin.locationFetcher) { // locationFetcherが利用可能か確認
                     new ApiInfoModal(this.app, this.plugin.locationFetcher).open();
                 } else {
                     new Notice('LocationFetcher is not available. Cannot show API info.');
@@ -189,7 +190,7 @@ export class MemoriaSettingTab extends PluginSettingTab {
 
 
     containerEl.createEl('h3', { text: 'Advanced Prompt Settings (JSON format expected if modified)' });
-    
+
     new Setting(containerEl)
         .setName('Keyword Extraction Prompt Template')
         .setDesc('Template for prompting keyword extraction. Use {userPrompt} and {llmRoleName}.')
