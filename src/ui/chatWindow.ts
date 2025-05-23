@@ -4,7 +4,6 @@ import ObsidianMemoria from '../../main';
 import { GeminiPluginSettings } from '../settings';
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
-// import { ChatMessageHistory } from "langchain/stores/message/in_memory"; // ChatSessionManagerが管理
 import { RunnableWithMessageHistory } from "@langchain/core/runnables";
 import {
   ChatPromptTemplate,
@@ -14,12 +13,13 @@ import {
 } from "@langchain/core/prompts";
 import { SummaryGenerator } from '../summaryGenerator';
 import { TagProfiler } from '../tagProfiler';
-import { ContextRetriever, RetrievedContext } from '../contextRetriever';
+import { ContextRetriever } from '../contextRetriever';
 import { LocationFetcher } from '../locationFetcher';
-import { CurrentContextualInfo } from '../types';
 import { ChatLogger } from '../chatLogger';
-import { ChatUIManager } from './chatUIManager'; // ConfirmationModalはChatUIManagerからエクスポートされる想定
-import { ChatSessionManager } from '../chatSessionManager'; // ChatSessionManager をインポート
+import { ChatUIManager } from './chatUIManager';
+import { ChatSessionManager } from '../chatSessionManager';
+import { PromptFormatter } from '../promptFormatter';
+import { ChatContextBuilder, LlmContextInput } from '../chatContextBuilder';
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
@@ -27,9 +27,10 @@ export class ChatView extends ItemView {
   plugin: ObsidianMemoria;
   settings: GeminiPluginSettings;
   private uiManager!: ChatUIManager;
-  private chatSessionManager!: ChatSessionManager; // ChatSessionManager のインスタンスを保持
+  private chatSessionManager!: ChatSessionManager;
+  private promptFormatter!: PromptFormatter;
+  private chatContextBuilder!: ChatContextBuilder;
 
-  // private messageHistory = new ChatMessageHistory(); // ChatSessionManagerが管理
   private chatModel: ChatGoogleGenerativeAI | null = null;
   private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
   private contextRetriever: ContextRetriever;
@@ -46,14 +47,17 @@ export class ChatView extends ItemView {
     this.settings = plugin.settings;
     this.llmRoleName = this.getLlmRoleName(this.settings.systemPrompt || "You are a helpful assistant.");
 
-    // 依存モジュールの初期化順序に注意
     this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
     this.summaryGenerator = new SummaryGenerator(this.plugin);
     this.tagProfiler = new TagProfiler(this.plugin);
-    // ChatSessionManager は ChatUIManager より先に初期化される必要がある場合がある
-    // (UI構築時にセッション情報が必要な場合など。今回はUI Managerがコールバックを受け取るので後でも可)
     this.contextRetriever = new ContextRetriever(this.plugin);
     this.locationFetcher = new LocationFetcher(this.plugin);
+    this.promptFormatter = new PromptFormatter(this.settings);
+    this.chatContextBuilder = new ChatContextBuilder(
+        this.contextRetriever,
+        this.locationFetcher,
+        this.settings
+    );
   }
 
   private getLlmRoleName(systemPrompt: string): string {
@@ -79,19 +83,16 @@ export class ChatView extends ItemView {
 
   private initializeChatModel() {
     this.settings = this.plugin.settings;
+    this.promptFormatter.updateSettings(this.settings);
+    this.chatContextBuilder.onSettingsChanged(this.settings);
+
     const characterSettingPrompt = this.settings.systemPrompt || "あなたは親切なアシスタントです。";
     this.llmRoleName = this.getLlmRoleName(characterSettingPrompt);
-    if (this.chatSessionManager) { // chatSessionManagerが初期化されていればロール名を更新
+    if (this.chatSessionManager) {
         this.chatSessionManager.updateLlmRoleName(this.llmRoleName);
     }
 
-
-    const baseRolePlayRules = `LLMキャラクターロールプレイ ルール...（省略）...---キャラクター設定:${characterSettingPrompt}---`;
-    const currentTimeInstruction = `Current time is {current_time}...`;
-    const locationInstruction = `## 現在の推定位置情報 (Current Estimated Location Information):{current_location_string}...`;
-    const weatherInstruction = `## 現地の現在の天気情報 (Current Local Weather Information):{current_weather_string}...`;
-    const memoryContextInstruction = `## 記憶からの参考情報 (Memory Recall Information):{retrieved_context_string}...指示...`;
-    const finalSystemPromptTemplate = currentTimeInstruction + locationInstruction + weatherInstruction + baseRolePlayRules + memoryContextInstruction;
+    const systemPromptTemplateString = this.promptFormatter.getSystemPromptTemplate();
 
     if (this.settings.geminiApiKey && this.settings.geminiModel) {
       try {
@@ -99,17 +100,19 @@ export class ChatView extends ItemView {
           apiKey: this.settings.geminiApiKey,
           model: this.settings.geminiModel,
         });
-        const systemMessagePrompt = SystemMessagePromptTemplate.fromTemplate(finalSystemPromptTemplate);
+
+        const systemMessagePrompt = SystemMessagePromptTemplate.fromTemplate(systemPromptTemplateString);
         const humanMessagePrompt = HumanMessagePromptTemplate.fromTemplate("{input}");
+
         const prompt = ChatPromptTemplate.fromMessages([
           systemMessagePrompt,
           new MessagesPlaceholder("history"),
           humanMessagePrompt,
         ]);
+
         const chain = prompt.pipe(this.chatModel);
         this.chainWithHistory = new RunnableWithMessageHistory({
             runnable: chain,
-            // messageHistoryはChatSessionManagerから取得
             getMessageHistory: (_sessionId) => this.chatSessionManager.messageHistory,
             inputMessagesKey: "input",
             historyMessagesKey: "history",
@@ -129,13 +132,20 @@ export class ChatView extends ItemView {
   }
 
   onSettingsChanged() {
-    this.initializeChatModel(); // これにより llmRoleName も更新される
-    if (this.chatSessionManager) { // chatSessionManagerが初期化されていればロール名を更新
+    this.initializeChatModel();
+    if (this.chatSessionManager) {
         this.chatSessionManager.updateLlmRoleName(this.llmRoleName);
     }
     this.summaryGenerator.onSettingsChanged();
     this.tagProfiler.onSettingsChanged();
     this.contextRetriever.onSettingsChanged();
+    this.locationFetcher.onSettingsChanged(this.plugin.settings);
+    if (this.promptFormatter) {
+        this.promptFormatter.updateSettings(this.plugin.settings);
+    }
+    if (this.chatContextBuilder) {
+        this.chatContextBuilder.onSettingsChanged(this.plugin.settings);
+    }
     console.log('[MemoriaChat] Settings changed, all relevant modules re-initialized.');
   }
 
@@ -146,13 +156,14 @@ export class ChatView extends ItemView {
   async onOpen() {
     this.settings = this.plugin.settings;
     this.llmRoleName = this.getLlmRoleName(this.settings.systemPrompt || "You are a helpful assistant.");
+    this.promptFormatter.updateSettings(this.settings);
+    this.chatContextBuilder.onSettingsChanged(this.settings);
 
-    // UIManagerとSessionManagerの初期化
     this.uiManager = new ChatUIManager(
         this.containerEl.children[1] as HTMLElement,
         () => this.sendMessage(),
-        () => this.chatSessionManager.resetChat(), // resetChatはSessionManagerのメソッドを呼ぶ
-        () => this.chatSessionManager.confirmAndDiscardChat() // confirmAndDiscardChatも同様
+        () => this.chatSessionManager.resetChat(),
+        () => this.chatSessionManager.confirmAndDiscardChat()
     );
 
     this.chatSessionManager = new ChatSessionManager(
@@ -165,8 +176,9 @@ export class ChatView extends ItemView {
         this.llmRoleName
     );
 
-    this.initializeChatModel(); // chainWithHistoryがmessageHistoryを参照するため、SessionManager初期化後に実行
+    this.initializeChatModel();
     this.contextRetriever.onSettingsChanged();
+    this.locationFetcher.onSettingsChanged(this.settings);
 
 
     this.uiManager.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');
@@ -180,10 +192,8 @@ export class ChatView extends ItemView {
     // Clean up resources if needed
   }
 
-  // resetChat, confirmAndDiscardChat, discardCurrentChatLogAndReset は ChatSessionManager に移行
-
   async sendMessage() {
-    if (!this.uiManager || !this.chatSessionManager) return;
+    if (!this.uiManager || !this.chatSessionManager || !this.promptFormatter || !this.chatContextBuilder) return;
 
     const rawMessageContent = this.uiManager.getInputText();
     const trimmedMessageContent = rawMessageContent.trim();
@@ -194,7 +204,7 @@ export class ChatView extends ItemView {
       return;
     }
 
-    const messages = await this.chatSessionManager.getMessages(); // SessionManagerから履歴取得
+    const messages = await this.chatSessionManager.getMessages();
     const userMessageCount = messages.filter(msg => msg._getType() === "human").length;
     const isFirstActualUserMessage = userMessageCount === 0;
 
@@ -209,8 +219,6 @@ export class ChatView extends ItemView {
     }
 
     this.uiManager.appendUserMessage(trimmedMessageContent);
-    // メッセージ履歴への追加は RunnableWithMessageHistory が行うので、ここでは不要
-    // await this.chatSessionManager.addMessage(new HumanMessage(trimmedMessageContent));
     await this.chatLogger.appendLogEntry(`**User**: ${trimmedMessageContent}\n`);
     this.uiManager.resetInputField();
 
@@ -223,72 +231,49 @@ export class ChatView extends ItemView {
 
     const loadingMessageEl = this.uiManager.appendMessage('応答を待っています...', 'loading');
 
-    let retrievedContextString = "記憶からの関連情報は見つかりませんでした。";
+    let llmContext: LlmContextInput;
     try {
-        const currentChatHistoryMessages = await this.chatSessionManager.getMessages();
-        const retrievedContextResult: RetrievedContext = await this.contextRetriever.retrieveContextForPrompt(
+        llmContext = await this.chatContextBuilder.prepareContextForLlm(
             trimmedMessageContent,
             this.llmRoleName,
-            currentChatHistoryMessages
+            await this.chatSessionManager.getMessages(),
+            isFirstActualUserMessage
         );
-        if (retrievedContextResult.llmContextPrompt && retrievedContextResult.llmContextPrompt.trim() !== "") {
-            retrievedContextString = retrievedContextResult.llmContextPrompt;
-        }
-    } catch (contextError: any) {
-        console.error('[MemoriaChat] Error retrieving context:', contextError.message, contextError.stack);
-        new Notice('記憶情報の取得中にエラーが発生しました。デフォルトのコンテキストを使用します。');
-    }
-
-    const currentTime = moment().format('YYYY-MM-DD HH:mm:ss dddd');
-    let currentLocationString = "現在地の取得に失敗しました。";
-    let currentWeatherString = "天気情報の取得に失敗しました。";
-
-    if (isFirstActualUserMessage) {
-        try {
-            const contextualInfo: CurrentContextualInfo | null = await this.locationFetcher.fetchCurrentContextualInfo();
-            if (contextualInfo) {
-                if (contextualInfo.location) {
-                    const loc = contextualInfo.location;
-                    currentLocationString = `現在のあなたの推定位置は、都市: ${loc.city || '不明'}, 地域: ${loc.regionName || '不明'}, 国: ${loc.country || '不明'} (タイムゾーン: ${loc.timezone || '不明'}) です。`;
-                    if (this.plugin.settings.showLocationInChat) {
-                        new Notice(`現在地: ${loc.city || '不明'}, ${loc.country || '不明'}`, 3000);
-                    }
-                } else if (contextualInfo.error?.includes('位置情報')) {
-                     currentLocationString = contextualInfo.error;
-                }
-                if (contextualInfo.weather) {
-                    const weather = contextualInfo.weather;
-                    currentWeatherString = `現地の天気は ${weather.description || '不明'}、気温 ${weather.temperature?.toFixed(1) ?? '不明'}℃、体感温度 ${weather.apparent_temperature?.toFixed(1) ?? '不明'}℃、湿度 ${weather.humidity ?? '不明'}%、風速 ${weather.windspeed?.toFixed(1) ?? '不明'}m/s です。(情報取得時刻: ${weather.time || '不明'})`;
-                     if (this.plugin.settings.showWeatherInChat) {
-                        new Notice(`天気: ${weather.description || '不明'} ${weather.temperature?.toFixed(1) ?? '?'}℃`, 3000);
-                    }
-                } else if (contextualInfo.error?.includes('天気情報')) {
-                    currentWeatherString = contextualInfo.error.replace(currentLocationString, '').trim();
-                    if (currentWeatherString === "") currentWeatherString = "天気情報の取得に失敗しました。";
-                }
+        if (isFirstActualUserMessage) {
+            if (this.settings.showLocationInChat && llmContext.current_location_string && !llmContext.current_location_string.includes("失敗") && !llmContext.current_location_string.includes("最初のメッセージでのみ")) {
+                new Notice(`現在地情報がLLMに渡されました。`, 3000);
             }
-        } catch (contextualError: any) {
-            console.error('[MemoriaChat] Error fetching contextual info for first message:', contextualError.message);
-            currentLocationString = "現在地の取得中に全体的なエラーが発生しました。";
-            currentWeatherString = "天気情報の取得中に全体的なエラーが発生しました。";
+            if (this.settings.showWeatherInChat && llmContext.current_weather_string && !llmContext.current_weather_string.includes("失敗") && !llmContext.current_weather_string.includes("最初のメッセージでのみ")) {
+                new Notice(`天気情報がLLMに渡されました。`, 3000);
+            }
         }
-    } else {
-        currentLocationString = "（現在地情報は最初のメッセージでのみ提供されます）";
-        currentWeatherString = "（天気情報は最初のメッセージでのみ提供されます）";
+
+    } catch (error: any) {
+        console.error('[MemoriaChat] Error preparing context via ChatContextBuilder:', error.message, error.stack);
+        new Notice('LLMへのコンテキスト準備中にエラーが発生しました。');
+        llmContext = {
+            character_setting_prompt: this.settings.systemPrompt || "あなたは親切なアシスタントです。",
+            retrieved_context_string: "記憶からの関連情報は見つかりませんでした。",
+            current_time: moment().format('YYYY-MM-DD HH:mm:ss dddd'),
+            current_location_string: "現在地の取得に失敗しました。",
+            current_weather_string: "天気情報の取得に失敗しました。",
+        };
     }
+
 
     try {
       const chainInput = {
         input: trimmedMessageContent,
-        retrieved_context_string: retrievedContextString,
-        current_time: currentTime,
-        current_location_string: currentLocationString,
-        current_weather_string: currentWeatherString,
+        character_setting_prompt: llmContext.character_setting_prompt,
+        retrieved_context_string: llmContext.retrieved_context_string,
+        current_time: llmContext.current_time,
+        current_location_string: llmContext.current_location_string,
+        current_weather_string: llmContext.current_weather_string,
       };
 
       const response = await this.chainWithHistory.invoke(
         chainInput,
-        { configurable: { sessionId: "obsidian-memoria-session" } } // sessionIdはセッションごとに変える必要があれば修正
+        { configurable: { sessionId: "obsidian-memoria-session" } }
       );
       loadingMessageEl.remove();
       let responseText = '';
@@ -302,8 +287,6 @@ export class ChatView extends ItemView {
         responseText = 'エラー: 予期しない形式の応答がありました。';
       }
       this.uiManager.appendModelMessage(responseText);
-      // メッセージ履歴へのAI応答の追加は RunnableWithMessageHistory が行う
-      // await this.chatSessionManager.addMessage(new AIMessage(responseText));
       await this.chatLogger.appendLogEntry(`**${this.llmRoleName}**: ${responseText}\n`);
 
     } catch (error: any) {
