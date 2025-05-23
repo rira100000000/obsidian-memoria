@@ -1,10 +1,10 @@
 // src/ui/chatWindow.ts
-import { ItemView, WorkspaceLeaf, Notice, moment, TFile, App } from 'obsidian'; // Modal, Setting は ChatUIManager に移動
+import { ItemView, WorkspaceLeaf, Notice, moment, TFile, App } from 'obsidian';
 import ObsidianMemoria from '../../main';
 import { GeminiPluginSettings } from '../settings';
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
-import { ChatMessageHistory } from "langchain/stores/message/in_memory";
+// import { ChatMessageHistory } from "langchain/stores/message/in_memory"; // ChatSessionManagerが管理
 import { RunnableWithMessageHistory } from "@langchain/core/runnables";
 import {
   ChatPromptTemplate,
@@ -18,18 +18,18 @@ import { ContextRetriever, RetrievedContext } from '../contextRetriever';
 import { LocationFetcher } from '../locationFetcher';
 import { CurrentContextualInfo } from '../types';
 import { ChatLogger } from '../chatLogger';
-import { ChatUIManager, ConfirmationModal } from './chatUIManager'; // ChatUIManager と ConfirmationModal をインポート
+import { ChatUIManager } from './chatUIManager'; // ConfirmationModalはChatUIManagerからエクスポートされる想定
+import { ChatSessionManager } from '../chatSessionManager'; // ChatSessionManager をインポート
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
 export class ChatView extends ItemView {
   plugin: ObsidianMemoria;
   settings: GeminiPluginSettings;
-  // chatMessagesEl: HTMLElement; // ChatUIManagerが管理
-  // inputEl: HTMLTextAreaElement; // ChatUIManagerが管理
-  private uiManager!: ChatUIManager; // UIマネージャーのインスタンスを保持
+  private uiManager!: ChatUIManager;
+  private chatSessionManager!: ChatSessionManager; // ChatSessionManager のインスタンスを保持
 
-  private messageHistory = new ChatMessageHistory();
+  // private messageHistory = new ChatMessageHistory(); // ChatSessionManagerが管理
   private chatModel: ChatGoogleGenerativeAI | null = null;
   private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
   private contextRetriever: ContextRetriever;
@@ -45,9 +45,13 @@ export class ChatView extends ItemView {
     this.plugin = plugin;
     this.settings = plugin.settings;
     this.llmRoleName = this.getLlmRoleName(this.settings.systemPrompt || "You are a helpful assistant.");
+
+    // 依存モジュールの初期化順序に注意
     this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
     this.summaryGenerator = new SummaryGenerator(this.plugin);
     this.tagProfiler = new TagProfiler(this.plugin);
+    // ChatSessionManager は ChatUIManager より先に初期化される必要がある場合がある
+    // (UI構築時にセッション情報が必要な場合など。今回はUI Managerがコールバックを受け取るので後でも可)
     this.contextRetriever = new ContextRetriever(this.plugin);
     this.locationFetcher = new LocationFetcher(this.plugin);
   }
@@ -77,8 +81,12 @@ export class ChatView extends ItemView {
     this.settings = this.plugin.settings;
     const characterSettingPrompt = this.settings.systemPrompt || "あなたは親切なアシスタントです。";
     this.llmRoleName = this.getLlmRoleName(characterSettingPrompt);
+    if (this.chatSessionManager) { // chatSessionManagerが初期化されていればロール名を更新
+        this.chatSessionManager.updateLlmRoleName(this.llmRoleName);
+    }
 
-    const baseRolePlayRules = `LLMキャラクターロールプレイ ルール...（省略）...---キャラクター設定:${characterSettingPrompt}---`; // 実際には省略しない
+
+    const baseRolePlayRules = `LLMキャラクターロールプレイ ルール...（省略）...---キャラクター設定:${characterSettingPrompt}---`;
     const currentTimeInstruction = `Current time is {current_time}...`;
     const locationInstruction = `## 現在の推定位置情報 (Current Estimated Location Information):{current_location_string}...`;
     const weatherInstruction = `## 現地の現在の天気情報 (Current Local Weather Information):{current_weather_string}...`;
@@ -101,7 +109,8 @@ export class ChatView extends ItemView {
         const chain = prompt.pipe(this.chatModel);
         this.chainWithHistory = new RunnableWithMessageHistory({
             runnable: chain,
-            getMessageHistory: (_sessionId) => this.messageHistory,
+            // messageHistoryはChatSessionManagerから取得
+            getMessageHistory: (_sessionId) => this.chatSessionManager.messageHistory,
             inputMessagesKey: "input",
             historyMessagesKey: "history",
         });
@@ -120,7 +129,10 @@ export class ChatView extends ItemView {
   }
 
   onSettingsChanged() {
-    this.initializeChatModel();
+    this.initializeChatModel(); // これにより llmRoleName も更新される
+    if (this.chatSessionManager) { // chatSessionManagerが初期化されていればロール名を更新
+        this.chatSessionManager.updateLlmRoleName(this.llmRoleName);
+    }
     this.summaryGenerator.onSettingsChanged();
     this.tagProfiler.onSettingsChanged();
     this.contextRetriever.onSettingsChanged();
@@ -134,17 +146,29 @@ export class ChatView extends ItemView {
   async onOpen() {
     this.settings = this.plugin.settings;
     this.llmRoleName = this.getLlmRoleName(this.settings.systemPrompt || "You are a helpful assistant.");
-    this.initializeChatModel();
-    this.contextRetriever.onSettingsChanged();
 
-    // ChatUIManagerの初期化とUI構築
-    // this.containerEl.children[1] は ItemView の .view-content を指す
+    // UIManagerとSessionManagerの初期化
     this.uiManager = new ChatUIManager(
         this.containerEl.children[1] as HTMLElement,
         () => this.sendMessage(),
-        () => this.resetChat(),
-        () => this.confirmAndDiscardChat()
+        () => this.chatSessionManager.resetChat(), // resetChatはSessionManagerのメソッドを呼ぶ
+        () => this.chatSessionManager.confirmAndDiscardChat() // confirmAndDiscardChatも同様
     );
+
+    this.chatSessionManager = new ChatSessionManager(
+        this.app,
+        this.plugin,
+        this.uiManager,
+        this.chatLogger,
+        this.summaryGenerator,
+        this.tagProfiler,
+        this.llmRoleName
+    );
+
+    this.initializeChatModel(); // chainWithHistoryがmessageHistoryを参照するため、SessionManager初期化後に実行
+    this.contextRetriever.onSettingsChanged();
+
+
     this.uiManager.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');
 
     if (!this.chainWithHistory) {
@@ -156,95 +180,10 @@ export class ChatView extends ItemView {
     // Clean up resources if needed
   }
 
-  private async confirmAndDiscardChat() {
-    const messages = await this.messageHistory.getMessages();
-    const currentLogPath = this.chatLogger.getLogFilePath();
-
-    if (!currentLogPath && messages.length <= 1) {
-        new Notice('破棄するチャットログがありません。');
-        await this.resetChat(true);
-        new Notice('現在のチャット（ログなし）が破棄され、新しいチャットが開始されました。');
-        return;
-    }
-
-    const modal = new ConfirmationModal( // ChatUIManagerからインポートしたConfirmationModalを使用
-        this.app,
-        'チャット履歴の破棄',
-        '現在のチャット履歴を完全に破棄しますか？この操作は元に戻せません。ログファイルも削除されます。',
-        async () => {
-            await this.discardCurrentChatLogAndReset();
-        }
-    );
-    modal.open();
-  }
-
-  private async discardCurrentChatLogAndReset() {
-    const currentLogPath = this.chatLogger.getLogFilePath();
-    if (currentLogPath) {
-        await this.chatLogger.deleteLogFile(currentLogPath);
-    } else {
-        console.log('[MemoriaChat] No log file path set, resetting UI and history.');
-    }
-    await this.resetChat(true);
-    new Notice('現在のチャットが破棄され、新しいチャットが開始されました。');
-  }
-
-  private async resetChat(skipSummary = false) {
-    const previousLogPath = this.chatLogger.getLogFilePath();
-    const previousLlmRoleName = this.llmRoleName;
-
-    this.chatLogger.resetLogFile();
-
-    if (this.uiManager) { // uiManagerが初期化されていれば使用
-        this.uiManager.clearMessages();
-        this.uiManager.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');
-        this.uiManager.resetInputField();
-        this.uiManager.scrollToBottom();
-    }
-    this.messageHistory = new ChatMessageHistory();
-
-
-    console.log('[MemoriaChat] Chat has been reset.');
-
-    if (!skipSummary) {
-        new Notice('新しいチャットが開始されました。');
-    }
-
-    if (!skipSummary && previousLogPath && previousLlmRoleName) {
-      new Notice(`前のチャットの要約をバックグラウンドで生成開始します: ${previousLogPath}`);
-      this.summaryGenerator.generateSummary(previousLogPath, previousLlmRoleName)
-        .then(async (summaryNoteFile: TFile | null) => {
-          if (summaryNoteFile) {
-            console.log(`[MemoriaChat] Summary generation completed: ${summaryNoteFile.path}`);
-            new Notice(`サマリーノートが生成されました: ${summaryNoteFile.basename}`);
-            await this.chatLogger.updateLogFileFrontmatter(previousLogPath, {
-                title: summaryNoteFile.basename.replace(/\.md$/, '').replace(/^SN-\d{12}-/, ''),
-                summary_note: `[[${summaryNoteFile.name}]]`
-            });
-            try {
-              await this.tagProfiler.processSummaryNote(summaryNoteFile);
-              console.log(`[MemoriaChat] Tag profiling initiated for ${summaryNoteFile.path}`);
-              new Notice(`タグプロファイル処理を開始しました: ${summaryNoteFile.basename}`);
-            } catch (tpError: any) {
-              console.error(`[MemoriaChat] Error during tag profiling for ${summaryNoteFile.path}:`, tpError.message, tpError.stack);
-              new Notice(`タグプロファイル処理中にエラーが発生しました: ${summaryNoteFile.basename}`);
-            }
-          } else {
-            console.log(`[MemoriaChat] Summary generation for ${previousLogPath} did not return a file.`);
-            new Notice(`前のチャット (${previousLogPath}) のサマリーノートファイルが取得できませんでした。`);
-          }
-        })
-        .catch(error => {
-          console.error(`[MemoriaChat] Summary generation failed for ${previousLogPath}:`, error);
-          new Notice(`前のチャット (${previousLogPath}) の要約作成に失敗しました。`);
-        });
-    } else if (skipSummary) {
-      console.log('[MemoriaChat] Summary generation skipped for previous chat.');
-    }
-  }
+  // resetChat, confirmAndDiscardChat, discardCurrentChatLogAndReset は ChatSessionManager に移行
 
   async sendMessage() {
-    if (!this.uiManager) return; // UIマネージャーがなければ何もしない
+    if (!this.uiManager || !this.chatSessionManager) return;
 
     const rawMessageContent = this.uiManager.getInputText();
     const trimmedMessageContent = rawMessageContent.trim();
@@ -255,7 +194,7 @@ export class ChatView extends ItemView {
       return;
     }
 
-    const messages = await this.messageHistory.getMessages();
+    const messages = await this.chatSessionManager.getMessages(); // SessionManagerから履歴取得
     const userMessageCount = messages.filter(msg => msg._getType() === "human").length;
     const isFirstActualUserMessage = userMessageCount === 0;
 
@@ -270,6 +209,8 @@ export class ChatView extends ItemView {
     }
 
     this.uiManager.appendUserMessage(trimmedMessageContent);
+    // メッセージ履歴への追加は RunnableWithMessageHistory が行うので、ここでは不要
+    // await this.chatSessionManager.addMessage(new HumanMessage(trimmedMessageContent));
     await this.chatLogger.appendLogEntry(`**User**: ${trimmedMessageContent}\n`);
     this.uiManager.resetInputField();
 
@@ -284,7 +225,7 @@ export class ChatView extends ItemView {
 
     let retrievedContextString = "記憶からの関連情報は見つかりませんでした。";
     try {
-        const currentChatHistoryMessages = await this.messageHistory.getMessages();
+        const currentChatHistoryMessages = await this.chatSessionManager.getMessages();
         const retrievedContextResult: RetrievedContext = await this.contextRetriever.retrieveContextForPrompt(
             trimmedMessageContent,
             this.llmRoleName,
@@ -347,7 +288,7 @@ export class ChatView extends ItemView {
 
       const response = await this.chainWithHistory.invoke(
         chainInput,
-        { configurable: { sessionId: "obsidian-memoria-session" } }
+        { configurable: { sessionId: "obsidian-memoria-session" } } // sessionIdはセッションごとに変える必要があれば修正
       );
       loadingMessageEl.remove();
       let responseText = '';
@@ -361,6 +302,8 @@ export class ChatView extends ItemView {
         responseText = 'エラー: 予期しない形式の応答がありました。';
       }
       this.uiManager.appendModelMessage(responseText);
+      // メッセージ履歴へのAI応答の追加は RunnableWithMessageHistory が行う
+      // await this.chatSessionManager.addMessage(new AIMessage(responseText));
       await this.chatLogger.appendLogEntry(`**${this.llmRoleName}**: ${responseText}\n`);
 
     } catch (error: any) {
