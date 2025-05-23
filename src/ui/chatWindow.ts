@@ -15,8 +15,8 @@ import {
 import { SummaryGenerator } from '../summaryGenerator';
 import { TagProfiler } from '../tagProfiler';
 import { ContextRetriever, RetrievedContext } from '../contextRetriever';
-import { LocationFetcher } from '../locationFetcher'; // LocationFetcherをインポート
-import { IpLocationInfo } from '../types'; // IpLocationInfo型をインポート
+import { LocationFetcher } from '../locationFetcher';
+import { CurrentContextualInfo } from '../types'; // CurrentContextualInfo型をインポート
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
@@ -64,7 +64,7 @@ export class ChatView extends ItemView {
   private chatModel: ChatGoogleGenerativeAI | null = null;
   private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
   private contextRetriever: ContextRetriever;
-  private locationFetcher: LocationFetcher; // LocationFetcherのインスタンスを保持
+  private locationFetcher: LocationFetcher;
 
   private logFilePath: string | null = null;
   private llmRoleName = 'Assistant';
@@ -78,7 +78,7 @@ export class ChatView extends ItemView {
     this.summaryGenerator = new SummaryGenerator(this.plugin);
     this.tagProfiler = new TagProfiler(this.plugin);
     this.contextRetriever = new ContextRetriever(this.plugin);
-    this.locationFetcher = new LocationFetcher(this.plugin); // LocationFetcherを初期化
+    this.locationFetcher = new LocationFetcher(this.plugin);
   }
 
   private getLlmRoleName(systemPrompt: string): string {
@@ -110,12 +110,17 @@ export class ChatView extends ItemView {
     const currentTimeInstruction = `
 Current time is {current_time}. Please consider this time when formulating your response, especially if the user's query is time-sensitive.
 `;
-    // 現在地情報をシステムプロンプトに含めるための指示を追加
     const locationInstruction = `
 
 ## 現在の推定位置情報 (Current Estimated Location Information):
 {current_location_string}
-この位置情報も応答を生成する際の参考にしてください。特に、ユーザーが場所に関連する質問をした場合や、地域に基づいた情報が役立つ場合に活用してください。
+`;
+    // 天気情報をシステムプロンプトに含めるための指示を追加
+    const weatherInstruction = `
+
+## 現地の現在の天気情報 (Current Local Weather Information):
+{current_weather_string}
+これらの位置情報や天気情報も応答を生成する際の参考にしてください。特に、ユーザーが場所や天候に関連する質問をした場合や、地域に基づいた情報が役立つ場合に活用してください。
 `;
 
     const memoryContextInstruction = `
@@ -132,8 +137,8 @@ Current time is {current_time}. Please consider this time when formulating your 
 - もし提供された情報が現在の質問と無関係である、または不正確であると明確に判断できる場合に限り、その情報を無視しても構いません。その際は、なぜ無視したのかを簡潔に説明する必要はありません。
 - 「記憶からの参考情報」が「記憶からの関連情報は見つかりませんでした。」となっている場合は、ユーザーの現在の質問にのみ基づいて応答してください。
 `;
-    // システムプロンプトテンプレートに現在時刻と現在地の指示を組み込む
-    const finalSystemPromptTemplate = currentTimeInstruction + locationInstruction + baseSystemPrompt + memoryContextInstruction;
+    // システムプロンプトテンプレートに現在時刻、現在地、天気の指示を組み込む
+    const finalSystemPromptTemplate = currentTimeInstruction + locationInstruction + weatherInstruction + baseSystemPrompt + memoryContextInstruction;
 
 
     if (this.settings.geminiApiKey && this.settings.geminiModel) {
@@ -160,7 +165,7 @@ Current time is {current_time}. Please consider this time when formulating your 
             historyMessagesKey: "history",
         });
         console.log(`[MemoriaChat] Chat model initialized. LLM Role: ${this.llmRoleName}`);
-        console.log(`[MemoriaChat] System prompt template being used (includes current_time, current_location placeholders): ${finalSystemPromptTemplate}`);
+        console.log(`[MemoriaChat] System prompt template being used (includes current_time, current_location, current_weather placeholders): ${finalSystemPromptTemplate}`);
       } catch (error: any) {
         console.error('[MemoriaChat] Failed to initialize ChatGoogleGenerativeAI model or chain:', error.message);
         new Notice('Geminiモデルまたはチャットチェーンの初期化に失敗しました。');
@@ -179,7 +184,6 @@ Current time is {current_time}. Please consider this time when formulating your 
     this.summaryGenerator.onSettingsChanged();
     this.tagProfiler.onSettingsChanged();
     this.contextRetriever.onSettingsChanged();
-    // LocationFetcherは現状設定に依存しないため、再初期化は不要
     console.log('[MemoriaChat] Settings changed, all relevant modules re-initialized.');
   }
 
@@ -190,7 +194,7 @@ Current time is {current_time}. Please consider this time when formulating your 
   async onOpen() {
     this.settings = this.plugin.settings;
     this.initializeChatModel();
-    this.contextRetriever.onSettingsChanged(); // ContextRetrieverは設定に依存するため再初期化
+    this.contextRetriever.onSettingsChanged();
 
     const container = this.containerEl.children[1];
     container.empty();
@@ -307,9 +311,9 @@ participants:
 
   private async confirmAndDiscardChat() {
     const messages = await this.messageHistory.getMessages();
-    if (!this.logFilePath && messages.length <= 1) { // 初期AIメッセージのみの場合も考慮
+    if (!this.logFilePath && messages.length <= 1) {
         new Notice('破棄するチャットログがありません。');
-        await this.resetChat(true); // ログなしでリセット
+        await this.resetChat(true);
         new Notice('現在のチャット（ログなし）が破棄され、新しいチャットが開始されました。');
         return;
     }
@@ -345,7 +349,7 @@ participants:
     } else {
         console.log('[MemoriaChat] No log file path set, resetting UI and history.');
     }
-    await this.resetChat(true); // ログなしでリセット
+    await this.resetChat(true);
     new Notice('現在のチャットが破棄され、新しいチャットが開始されました。');
   }
 
@@ -359,7 +363,7 @@ participants:
     if (this.chatMessagesEl) {
       this.chatMessagesEl.empty();
     }
-    this.messageHistory = new ChatMessageHistory(); // メッセージ履歴をクリア
+    this.messageHistory = new ChatMessageHistory();
     this.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');
     this.scrollToBottom();
 
@@ -371,7 +375,7 @@ participants:
 
     console.log('[MemoriaChat] Chat has been reset.');
 
-    if (!skipSummary) { // skipSummaryがfalseの場合のみ通知
+    if (!skipSummary) {
         new Notice('新しいチャットが開始されました。');
     }
 
@@ -435,7 +439,6 @@ participants:
     }
 
     const messages = await this.messageHistory.getMessages();
-    // 初期AIメッセージを除いた実質的なユーザーメッセージの数をカウント
     const userMessageCount = messages.filter(msg => msg._getType() === "human").length;
     const isFirstActualUserMessage = userMessageCount === 0;
 
@@ -470,8 +473,8 @@ participants:
     if (!this.chainWithHistory) {
       this.appendModelMessage('エラー: チャットチェーンが初期化されていません。プラグイン設定を確認してください。');
       new Notice('チャット機能が利用できません。設定を確認してください。');
-      this.initializeChatModel(); // 再度初期化を試みる
-      if(!this.chainWithHistory) return; // それでもダメなら中止
+      this.initializeChatModel();
+      if(!this.chainWithHistory) return;
     }
 
     const loadingMessageEl = this.appendMessage('応答を待っています...', 'loading');
@@ -496,31 +499,44 @@ participants:
 
     const currentTime = moment().format('YYYY-MM-DD HH:mm:ss dddd');
     let currentLocationString = "現在地の取得に失敗しました。";
+    let currentWeatherString = "天気情報の取得に失敗しました。";
 
     if (isFirstActualUserMessage) {
         try {
-            const ipInfo: IpLocationInfo | null = await this.locationFetcher.fetchCurrentIpLocation();
-            if (ipInfo && ipInfo.status === 'success') {
-                const formattedLocation = this.locationFetcher.formatIpLocationForContext(ipInfo);
-                if (formattedLocation) {
-                    currentLocationString = `現在のあなたの推定位置は、都市: ${formattedLocation.city || '不明'}, 地域: ${formattedLocation.regionName || '不明'}, 国: ${formattedLocation.country || '不明'} (タイムゾーン: ${formattedLocation.timezone || '不明'}) です。`;
-                    // if (this.plugin.settings.showLocationInChat) { // 設定で表示/非表示を切り替えられるようにする場合
-                    //     new Notice(`現在地情報: ${formattedLocation.city}, ${formattedLocation.country}`, 3000);
+            const contextualInfo: CurrentContextualInfo | null = await this.locationFetcher.fetchCurrentContextualInfo();
+            if (contextualInfo) {
+                if (contextualInfo.location) {
+                    const loc = contextualInfo.location;
+                    currentLocationString = `現在のあなたの推定位置は、都市: ${loc.city || '不明'}, 地域: ${loc.regionName || '不明'}, 国: ${loc.country || '不明'} (タイムゾーン: ${loc.timezone || '不明'}) です。`;
+                    // if (this.plugin.settings.showLocationInChat) {
+                    new Notice(`現在地: ${loc.city || '不明'}, ${loc.country || '不明'}`, 3000);
                     // }
-                } else {
-                    currentLocationString = "現在地の詳細フォーマットに失敗しました。";
+                } else if (contextualInfo.error?.includes('位置情報')) {
+                     currentLocationString = contextualInfo.error;
                 }
-            } else if (ipInfo && ipInfo.message) {
-                currentLocationString = `現在地の取得に失敗しました: ${ipInfo.message}`;
+
+
+                if (contextualInfo.weather) {
+                    const weather = contextualInfo.weather;
+                    currentWeatherString = `現地の天気は ${weather.description || '不明'}、気温 ${weather.temperature?.toFixed(1) ?? '不明'}℃、体感温度 ${weather.apparent_temperature?.toFixed(1) ?? '不明'}℃、湿度 ${weather.humidity ?? '不明'}%、風速 ${weather.windspeed?.toFixed(1) ?? '不明'}m/s です。(情報取得時刻: ${weather.time || '不明'})`;
+                    //  if (this.plugin.settings.showWeatherInChat) { // 設定項目は別途追加想定
+                    new Notice(`天気: ${weather.description || '不明'} ${weather.temperature?.toFixed(1) ?? '?'}℃`, 3000);
+                    // }
+                } else if (contextualInfo.error?.includes('天気情報')) {
+                    currentWeatherString = contextualInfo.error.replace(currentLocationString, '').trim(); // 位置情報エラーメッセージを除去
+                    if (currentWeatherString === "") currentWeatherString = "天気情報の取得に失敗しました。"; // 万が一空になった場合
+                }
             }
             console.log(`[MemoriaChat] Location for first message: ${currentLocationString}`);
-        } catch (locationError: any) {
-            console.error('[MemoriaChat] Error fetching location for first message:', locationError.message);
-            currentLocationString = "現在地の取得中にエラーが発生しました。";
+            console.log(`[MemoriaChat] Weather for first message: ${currentWeatherString}`);
+        } catch (contextualError: any) {
+            console.error('[MemoriaChat] Error fetching contextual info for first message:', contextualError.message);
+            currentLocationString = "現在地の取得中に全体的なエラーが発生しました。";
+            currentWeatherString = "天気情報の取得中に全体的なエラーが発生しました。";
         }
     } else {
-        // 最初のメッセージでない場合は、プレースホルダーにデフォルト値を設定するか、空にする
         currentLocationString = "（現在地情報は最初のメッセージでのみ提供されます）";
+        currentWeatherString = "（天気情報は最初のメッセージでのみ提供されます）";
     }
 
 
@@ -533,7 +549,12 @@ Current time is ${currentTime}. Please consider this time when formulating your 
 
 ## 現在の推定位置情報 (Current Estimated Location Information):
 ${currentLocationString}
-この位置情報も応答を生成する際の参考にしてください。特に、ユーザーが場所に関連する質問をした場合や、地域に基づいた情報が役立つ場合に活用してください。
+`;
+      const weatherInstructionForLog = `
+
+## 現地の現在の天気情報 (Current Local Weather Information):
+${currentWeatherString}
+これらの位置情報や天気情報も応答を生成する際の参考にしてください。特に、ユーザーが場所や天候に関連する質問をした場合や、地域に基づいた情報が役立つ場合に活用してください。
 `;
       const memoryContextInstructionForLog = `
 
@@ -549,7 +570,7 @@ ${retrievedContextString}
 - もし提供された情報が現在の質問と無関係である、または不正確であると明確に判断できる場合に限り、その情報を無視しても構いません。その際は、なぜ無視したのかを簡潔に説明する必要はありません。
 - 「記憶からの参考情報」が「記憶からの関連情報は見つかりませんでした。」となっている場合は、ユーザーの現在の質問にのみ基づいて応答してください。
 `;
-      const effectiveSystemPromptForLogging = currentTimeInstructionForLog + locationInstructionForLog + baseSystemPrompt + memoryContextInstructionForLog;
+      const effectiveSystemPromptForLogging = currentTimeInstructionForLog + locationInstructionForLog + weatherInstructionForLog + baseSystemPrompt + memoryContextInstructionForLog;
       console.log("[MemoriaChat] Effective system prompt content being prepared for LLM:", effectiveSystemPromptForLogging);
 
 
@@ -557,7 +578,8 @@ ${retrievedContextString}
         input: trimmedMessageContent,
         retrieved_context_string: retrievedContextString,
         current_time: currentTime,
-        current_location_string: currentLocationString, // 現在地情報を渡す
+        current_location_string: currentLocationString,
+        current_weather_string: currentWeatherString, // 天気情報を渡す
       };
       console.log("[MemoriaChat] Invoking chain with input:", JSON.stringify(chainInput, null, 2));
 

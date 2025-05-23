@@ -125,20 +125,44 @@ export interface IpLocationInfo {
 }
 
 /**
- * 天気情報API (Open-Meteo) から返される情報の簡易的な型。
- * 必要な情報のみを定義。
+ * Open-Meteo APIから返される現在の天気情報の型。
+ * https://open-meteo.com/en/docs#current=temperature_2m,weather_code,wind_speed_10m
+ */
+export interface OpenMeteoCurrentWeather {
+  time: string; // ISO8601 format e.g., "2023-10-27T15:00"
+  interval: number; // Interval in seconds (e.g., 900 for 15 minutes)
+  temperature_2m?: number; // Air temperature at 2 meters above ground
+  relative_humidity_2m?: number; // Relative humidity at 2 meters above ground
+  apparent_temperature?: number; // Apparent temperature
+  is_day?: 0 | 1; // 1 if it is day, 0 if it is night
+  precipitation?: number; // Sum of precipitation (rain, showers, snow) in the last hour in mm
+  rain?: number;
+  showers?: number;
+  snowfall?: number;
+  weather_code?: number; // WMO Weather interpretation code
+  cloud_cover?: number; // Percentage
+  pressure_msl?: number; // Sea level pressure
+  surface_pressure?: number;
+  wind_speed_10m?: number; // Wind speed at 10 meters above ground
+  wind_direction_10m?: number; // Wind direction at 10 meters above ground
+  wind_gusts_10m?: number; // Wind gusts at 10 meters above ground
+}
+
+/**
+ * Open-Meteo APIのレスポンス全体の型。
  */
 export interface WeatherInfo {
   latitude: number;
   longitude: number;
-  current_weather: {
-    temperature: number;
-    weathercode: number;
-    windspeed: number;
-    time: string; // ISO 8601 format
-  };
-  // 他にも hourly や daily のデータがあるが、ここでは省略
+  generationtime_ms: number;
+  utc_offset_seconds: number;
+  timezone: string; // e.g., "Asia/Tokyo"
+  timezone_abbreviation: string; // e.g., "JST"
+  elevation: number;
+  current?: OpenMeteoCurrentWeather; // current_weatherがOpenMeteoのドキュメントではcurrentに変わったため合わせる
+  // current_weather?: OpenMeteoCurrentWeather; // 古いAPI仕様の場合
 }
+
 
 /**
  * LocationFetcherが返す、整形された位置情報と天気情報。
@@ -156,7 +180,9 @@ export interface CurrentContextualInfo {
     temperature?: number;
     description?: string; // 天気コードから変換した説明
     windspeed?: number;
-    time?: string;
+    time?: string; // 天気情報の取得時刻
+    humidity?: number;
+    apparent_temperature?: number;
   };
   error?: string; // エラーが発生した場合のメッセージ
   attribution?: { // API利用の帰属表示
