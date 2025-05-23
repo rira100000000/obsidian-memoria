@@ -1,29 +1,34 @@
 // src/settings.ts
-import { App, PluginSettingTab, Setting, TextAreaComponent, TextComponent, SliderComponent } from 'obsidian';
+import { App, PluginSettingTab, Setting, TextAreaComponent, TextComponent, SliderComponent, Notice } from 'obsidian';
 import ObsidianMemoria from '../main';
+import { ApiInfoModal } from './ui/apiInfoModal'; // ApiInfoModalをインポート
 
 export interface GeminiPluginSettings {
   geminiModel: string;
   geminiApiKey: string;
   systemPrompt: string;
-  keywordExtractionModel: string; // キーワード抽出に使用するモデル名
-  maxContextLength: number; // LLMに渡すコンテキスト文字列の最大長（文字数）
-  maxContextLengthForEvaluation: number; // LLM評価用のコンテキスト文字列の最大長
-  maxTagsToRetrieve: number; // 記憶想起時に参照するTPNの最大数
-  prompts?: { // プロンプトを外部設定可能にする
-    keywordExtractionPrompt?: string; // キーワード抽出用プロンプト
-    contextEvaluationPromptBase?: string; // コンテキスト評価プロンプトのベース部分
+  keywordExtractionModel: string;
+  maxContextLength: number;
+  maxContextLengthForEvaluation: number;
+  maxTagsToRetrieve: number;
+  showLocationInChat: boolean; // チャットUIに位置情報をNoticeで表示するかの設定
+  showWeatherInChat: boolean;  // チャットUIに天気情報をNoticeで表示するかの設定
+  prompts?: {
+    keywordExtractionPrompt?: string;
+    contextEvaluationPromptBase?: string;
   };
 }
 
 export const DEFAULT_SETTINGS: GeminiPluginSettings = {
-  geminiModel: 'gemini-1.5-flash-latest', // モデル名をより具体的に
+  geminiModel: 'gemini-1.5-flash-latest',
   geminiApiKey: '',
   systemPrompt: "You are a helpful assistant integrated into Obsidian. When answering, consider the 'Memory Recall Information' provided below, which is excerpted from past conversations and related notes. Use this information to provide more contextually relevant and consistent responses. If the information seems inaccurate or irrelevant to the current conversation, you don't need to force its use. Aim for a continuous interaction by reflecting the user's past opinions, events, or preferences. If you explicitly refer to memory information, you can subtly suggest it, like 'Regarding the matter of X we discussed earlier...'.",
-  keywordExtractionModel: 'gemini-1.5-flash-latest', // デフォルトはメインモデルと同じか、より軽量なものを推奨
+  keywordExtractionModel: 'gemini-1.5-flash-latest',
   maxContextLength: 3500,
   maxContextLengthForEvaluation: 3500,
   maxTagsToRetrieve: 5,
+  showLocationInChat: false, // デフォルトは非表示
+  showWeatherInChat: false,  // デフォルトは非表示
   prompts: {
     keywordExtractionPrompt: `ユーザーの現在のメッセージは「{userPrompt}」です。このメッセージはLLMキャラクター「{llmRoleName}」に向けられています。\n\nこのメッセージの意図を理解する上で中心となる重要なキーワードやエンティティ（例: 人物名、プロジェクト名、特定の話題）を最大5つまで抽出してください。\nそして、抽出した各キーワードに対して、今回のメッセージ内での相対的な重要度を0から100の範囲でスコアリングしてください。\n\n応答は以下のJSON形式の配列で、キーワード(keyword)とそのスコア(score)を含めてください。\n例:\n[\n  { "keyword": "プロジェクトA", "score": 90 },\n  { "keyword": "締め切り", "score": 75 },\n  { "keyword": "山田さん", "score": 80 }\n]\n\nもし適切なキーワードが見つからない場合は、空の配列 [] を返してください。\nJSONオブジェクトのみを返し、他のテキストは含めないでください。`,
     contextEvaluationPromptBase: `あなたはユーザー「{llmRoleName}」の記憶と思考を補助するAIです。\nユーザーの現在の質問は「{userPrompt}」です。\n現在までに以下の参考情報が集まっています。\n---\n{currentContextForEval}\n---\nあなたのタスクは、これらの情報がユーザーの現在の質問に適切に応答するために十分かどうかを評価することです。\n応答は必ず以下のJSON形式で出力してください。\n\`\`\`json\n{\n  "sufficient_for_response": <true または false>,\n  "reasoning": "<判断理由を簡潔に記述>",\n  "next_summary_notes_to_fetch": ["<もし 'sufficient_for_response' が false で、次に参照すべきサマリーノートがあれば、そのファイル名を複数指定 (例: 'SN-YYYYMMDDHHMM-Topic1', 'SN-YYYYMMDDHHMM-Topic2')。不要なら空配列 []>"],\n  "requires_full_log_for_summary_note": "<もし 'sufficient_for_response' が false で、特定のサマリーノートのフルログが必要な場合、そのサマリーノートのファイル名を指定 (例: 'SN-YYYYMMDDHHMM-TopicX')。不要なら null>"\n}\n\`\`\`\n考慮事項:\n- 現在の評価レベルは「{currentLevel}」です。\n- {currentLevelSpecificConsideration}\n- ユーザーの質問の意図を深く理解し、本当に必要な情報だけを要求するようにしてください。\n- \`next_summary_notes_to_fetch\` と \`requires_full_log_for_summary_note\` は、\`sufficient_for_response\` が false の場合にのみ意味を持ちます。\n- \`requires_full_log_for_summary_note\` は、既にSNを読み込んだ後、そのSNに紐づくFLが必要な場合に指定します。\nJSONオブジェクトのみを返し、他のテキストは含めないでください。`,
@@ -147,6 +152,40 @@ export class MemoriaSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 });
         });
+
+    containerEl.createEl('h3', { text: 'Contextual Information Settings (Location & Weather)' });
+    new Setting(containerEl)
+        .setName('Show location in chat (Notice)')
+        .setDesc('If enabled, a notice with the fetched location (city, country) will be shown in the chat UI upon first message.')
+        .addToggle(toggle => toggle
+            .setValue(this.plugin.settings.showLocationInChat)
+            .onChange(async (value) => {
+                this.plugin.settings.showLocationInChat = value;
+                await this.plugin.saveSettings();
+            }));
+    new Setting(containerEl)
+        .setName('Show weather in chat (Notice)')
+        .setDesc('If enabled, a notice with the fetched weather (description, temperature) will be shown in the chat UI upon first message.')
+        .addToggle(toggle => toggle
+            .setValue(this.plugin.settings.showWeatherInChat)
+            .onChange(async (value) => {
+                this.plugin.settings.showWeatherInChat = value;
+                await this.plugin.saveSettings();
+            }));
+
+    new Setting(containerEl)
+        .setName('External API Information')
+        .setDesc('View information about the external APIs used for location and weather.')
+        .addButton(button => button
+            .setButtonText('Show API Information')
+            .onClick(() => {
+                if (this.plugin.locationFetcher) {
+                    new ApiInfoModal(this.app, this.plugin.locationFetcher).open();
+                } else {
+                    new Notice('LocationFetcher is not available. Cannot show API info.');
+                    console.error('[MemoriaSettingTab] LocationFetcher instance is not available on plugin object.');
+                }
+            }));
 
 
     containerEl.createEl('h3', { text: 'Advanced Prompt Settings (JSON format expected if modified)' });
