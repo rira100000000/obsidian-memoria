@@ -1,12 +1,13 @@
 // src/settings.ts
 import { App, PluginSettingTab, Setting, TextAreaComponent, TextComponent, SliderComponent, Notice } from 'obsidian';
 import ObsidianMemoria from '../main';
-import { ApiInfoModal } from './ui/apiInfoModal'; // ApiInfoModalをインポート
+import { ApiInfoModal } from './ui/apiInfoModal';
 
 export interface GeminiPluginSettings {
   geminiModel: string;
   geminiApiKey: string;
-  systemPrompt: string; // キャラクター設定専用に変更
+  llmRoleName: string; // LLMのロール名を追加
+  systemPrompt: string;
   keywordExtractionModel: string;
   maxContextLength: number;
   maxContextLengthForEvaluation: number;
@@ -22,14 +23,14 @@ export interface GeminiPluginSettings {
 export const DEFAULT_SETTINGS: GeminiPluginSettings = {
   geminiModel: 'gemini-1.5-flash-latest',
   geminiApiKey: '',
-  // systemPrompt はキャラクター設定（名前、性格、一人称、口調など）を記述する場所に変更
-  systemPrompt: "名前：アシスタント\n性格：親切で丁寧\n一人称：私\n口調：ですます調\n（ここにキャラクターの背景、好きなこと、嫌いなこと、行動指針などを自由に記述してください）",
+  llmRoleName: 'Assistant', // デフォルトのLLMロール名
+  systemPrompt: "性格：親切で丁寧\n一人称：私\n口調：ですます調\n（ここにキャラクターの背景、好きなこと、嫌いなこと、行動指針などを自由に記述してください）",
   keywordExtractionModel: 'gemini-1.5-flash-latest',
   maxContextLength: 3500,
   maxContextLengthForEvaluation: 3500,
   maxTagsToRetrieve: 5,
-  showLocationInChat: false, // デフォルトは非表示
-  showWeatherInChat: false,  // デフォルトは非表示
+  showLocationInChat: false,
+  showWeatherInChat: false,
   prompts: {
     keywordExtractionPrompt: `ユーザーの現在のメッセージは「{userPrompt}」です。このメッセージはLLMキャラクター「{llmRoleName}」に向けられています。\n\nこのメッセージの意図を理解する上で中心となる重要なキーワードやエンティティ（例: 人物名、プロジェクト名、特定の話題）を最大5つまで抽出してください。\nそして、抽出した各キーワードに対して、今回のメッセージ内での相対的な重要度を0から100の範囲でスコアリングしてください。\n\n応答は以下のJSON形式の配列で、キーワード(keyword)とそのスコア(score)を含めてください。\n例:\n[\n  { "keyword": "プロジェクトA", "score": 90 },\n  { "keyword": "締め切り", "score": 75 },\n  { "keyword": "山田さん", "score": 80 }\n]\n\nもし適切なキーワードが見つからない場合は、空の配列 [] を返してください。\nJSONオブジェクトのみを返し、他のテキストは含めないでください。`,
     contextEvaluationPromptBase: `あなたはユーザー「{llmRoleName}」の記憶と思考を補助するAIです。\nユーザーの現在の質問は「{userPrompt}」です。\n現在までに以下の参考情報が集まっています。\n---\n{currentContextForEval}\n---\nあなたのタスクは、これらの情報がユーザーの現在の質問に適切に応答するために十分かどうかを評価することです。\n応答は必ず以下のJSON形式で出力してください。\n\`\`\`json\n{\n  "sufficient_for_response": <true または false>,\n  "reasoning": "<判断理由を簡潔に記述>",\n  "next_summary_notes_to_fetch": ["<もし 'sufficient_for_response' が false で、次に参照すべきサマリーノートがあれば、そのファイル名を複数指定 (例: 'SN-YYYYMMDDHHMM-Topic1', 'SN-YYYYMMDDHHMM-Topic2')。不要なら空配列 []>"],\n  "requires_full_log_for_summary_note": "<もし 'sufficient_for_response' が false で、特定のサマリーノートのフルログが必要な場合、そのサマリーノートのファイル名を指定 (例: 'SN-YYYYMMDDHHMM-TopicX')。不要なら null>"\n}\n\`\`\`\n考慮事項:\n- 現在の評価レベルは「{currentLevel}」です。\n- {currentLevelSpecificConsideration}\n- ユーザーの質問の意図を深く理解し、本当に必要な情報だけを要求するようにしてください。\n- \`next_summary_notes_to_fetch\` と \`requires_full_log_for_summary_note\` は、\`sufficient_for_response\` が false の場合にのみ意味を持ちます。\n- \`requires_full_log_for_summary_note\` は、既にSNを読み込んだ後、そのSNに紐づくFLが必要な場合に指定します。\nJSONオブジェクトのみを返し、他のテキストは含めないでください。`,
@@ -73,18 +74,31 @@ export class MemoriaSettingTab extends PluginSettingTab {
         })
         .inputEl.setAttribute('type', 'password'));
 
+    containerEl.createEl('h3', { text: 'LLM Persona Settings' }); // セクション名を変更
+
     new Setting(containerEl)
-      .setName('Character Setting Prompt') // 名称を変更
-      .setDesc('Set the character settings for the AI (name, personality, speaking style, etc.). Basic role-playing rules are predefined by the plugin.') // 説明を変更
+      .setName('LLM Role Name (Persona Name)') // 新しい設定項目
+      .setDesc('Set the name of your LLM persona. This name will be used in logs, summaries, and reflections.')
+      .addText(text => text
+        .setPlaceholder('例: Assistant, Memoria, Bob')
+        .setValue(this.plugin.settings.llmRoleName)
+        .onChange(async (value) => {
+          this.plugin.settings.llmRoleName = value.trim() || DEFAULT_SETTINGS.llmRoleName; // 空の場合はデフォルト値
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Character Setting Prompt (System Prompt)')
+      .setDesc('Set the character settings for the AI (personality, speaking style, background, etc.). The Role Name above will be used as the persona\'s name.')
       .addTextArea((text: TextAreaComponent) => {
         text
-          .setPlaceholder('Example:\nName: Assistant\nPersonality: Kind and polite\nFirst person: I\nTone: Formal\n(Describe character background, likes, dislikes, principles, etc.)') // Placeholder を更新
+          .setPlaceholder('Example:\nPersonality: Kind and polite\nFirst person: I\nTone: Formal\n(Describe character background, likes, dislikes, principles, etc.)')
           .setValue(this.plugin.settings.systemPrompt)
           .onChange(async (value) => {
             this.plugin.settings.systemPrompt = value;
             await this.plugin.saveSettings();
           });
-        text.inputEl.rows = 8; // 行数を増やすと入力しやすいかもしれません
+        text.inputEl.rows = 8;
         text.inputEl.style.width = '100%';
         text.inputEl.style.minHeight = '120px';
       });
@@ -127,7 +141,7 @@ export class MemoriaSettingTab extends PluginSettingTab {
         .addSlider(slider => {
             maxContextLengthSlider = slider;
             slider
-                .setLimits(1000, 10000, 100) // 1000から10000文字、ステップ100
+                .setLimits(1000, 10000, 100)
                 .setValue(this.plugin.settings.maxContextLength)
                 .setDynamicTooltip()
                 .onChange(async (value) => {
@@ -144,7 +158,7 @@ export class MemoriaSettingTab extends PluginSettingTab {
         .addSlider(slider => {
             maxContextLengthForEvalSlider = slider;
             slider
-                .setLimits(1000, 10000, 100) // 1000から10000文字、ステップ100
+                .setLimits(1000, 10000, 100)
                 .setValue(this.plugin.settings.maxContextLengthForEvaluation)
                 .setDynamicTooltip()
                 .onChange(async (value) => {
@@ -180,7 +194,7 @@ export class MemoriaSettingTab extends PluginSettingTab {
         .addButton(button => button
             .setButtonText('Show API Information')
             .onClick(() => {
-                if (this.plugin.locationFetcher) { // locationFetcherが利用可能か確認
+                if (this.plugin.locationFetcher) {
                     new ApiInfoModal(this.app, this.plugin.locationFetcher).open();
                 } else {
                     new Notice('LocationFetcher is not available. Cannot show API info.');

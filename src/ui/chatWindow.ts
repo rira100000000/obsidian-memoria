@@ -1,7 +1,7 @@
 // src/ui/chatWindow.ts
 import { ItemView, WorkspaceLeaf, Notice, moment, TFile, App } from 'obsidian';
 import ObsidianMemoria from '../../main';
-import { GeminiPluginSettings } from '../settings';
+import { GeminiPluginSettings, DEFAULT_SETTINGS } from '../settings'; // DEFAULT_SETTINGSもインポート
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
 import { RunnableWithMessageHistory } from "@langchain/core/runnables";
@@ -35,9 +35,9 @@ export class ChatView extends ItemView {
   private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
   private contextRetriever: ContextRetriever;
   private locationFetcher: LocationFetcher;
-  private chatLogger: ChatLogger;
+  private chatLogger!: ChatLogger;
 
-  private llmRoleName = 'Assistant';
+  private llmRoleName: string;
   private summaryGenerator: SummaryGenerator;
   private tagProfiler: TagProfiler;
 
@@ -45,9 +45,8 @@ export class ChatView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.settings = plugin.settings;
-    this.llmRoleName = this.getLlmRoleName(this.settings.systemPrompt || "You are a helpful assistant.");
+    this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
 
-    this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
     this.summaryGenerator = new SummaryGenerator(this.plugin);
     this.tagProfiler = new TagProfiler(this.plugin);
     this.contextRetriever = new ContextRetriever(this.plugin);
@@ -60,34 +59,19 @@ export class ChatView extends ItemView {
     );
   }
 
-  private getLlmRoleName(systemPrompt: string): string {
-    if (!systemPrompt) return 'Assistant';
-    let match;
-    match = systemPrompt.match(/named\s+([\w\s-]+)(?:\.|$|,|;)/i);
-    if (match && match[1]) return match[1].trim();
-    match = systemPrompt.match(/Your name is\s+([\w\s-]+)(?:\.|$|,|;)/i);
-    if (match && match[1]) return match[1].trim();
-    match = systemPrompt.match(/Your role is\s+([\w\s-]+)(?:\.|$|,|;)/i);
-    if (match && match[1]) return match[1].trim();
-    match = systemPrompt.match(/^You are (?:a|an)\s+([\w\s-]+?)(?:\.|$|,|;)/i);
-    if (match && match[1]) {
-        const role = match[1].trim();
-        const lowerRole = role.toLowerCase();
-        if (lowerRole === 'helpful assistant' || lowerRole === 'ai assistant' || lowerRole === 'assistant') {
-            return 'Assistant';
-        }
-        return role;
-    }
-    return 'Assistant';
-  }
-
   private initializeChatModel() {
     this.settings = this.plugin.settings;
+    this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
+
     this.promptFormatter.updateSettings(this.settings);
     this.chatContextBuilder.onSettingsChanged(this.settings);
+    if (this.chatLogger) {
+        this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
+    }
 
-    const characterSettingPrompt = this.settings.systemPrompt || "あなたは親切なアシスタントです。";
-    this.llmRoleName = this.getLlmRoleName(characterSettingPrompt);
+    // const characterSettingPrompt = this.settings.systemPrompt || DEFAULT_SETTINGS.systemPrompt; // この行は不要
+    // systemPromptの値はChatContextBuilder経由で渡される
+
     if (this.chatSessionManager) {
         this.chatSessionManager.updateLlmRoleName(this.llmRoleName);
     }
@@ -132,37 +116,46 @@ export class ChatView extends ItemView {
   }
 
   onSettingsChanged() {
+    this.settings = this.plugin.settings;
+    this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
+
     this.initializeChatModel();
+
     if (this.chatSessionManager) {
         this.chatSessionManager.updateLlmRoleName(this.llmRoleName);
     }
+    if (this.chatLogger) {
+        this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
+    } else {
+        this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
+    }
+
     this.summaryGenerator.onSettingsChanged();
     this.tagProfiler.onSettingsChanged();
     this.contextRetriever.onSettingsChanged();
-    this.locationFetcher.onSettingsChanged(this.plugin.settings);
-    if (this.promptFormatter) {
-        this.promptFormatter.updateSettings(this.plugin.settings);
-    }
-    if (this.chatContextBuilder) {
-        this.chatContextBuilder.onSettingsChanged(this.plugin.settings);
-    }
-    console.log('[MemoriaChat] Settings changed, all relevant modules re-initialized.');
+    this.locationFetcher.onSettingsChanged(this.settings);
+
+    this.updateTitle();
+    console.log('[MemoriaChat] Settings changed, relevant modules re-initialized/updated.');
   }
 
   getViewType() { return CHAT_VIEW_TYPE; }
-  getDisplayText() { return 'Memoria Chat'; }
+  getDisplayText() { return `Memoria Chat (${this.llmRoleName || '...'})`; }
   getIcon() { return 'messages-square'; }
 
   async onOpen() {
     this.settings = this.plugin.settings;
-    this.llmRoleName = this.getLlmRoleName(this.settings.systemPrompt || "You are a helpful assistant.");
+    this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
+
+    this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
+
     this.promptFormatter.updateSettings(this.settings);
     this.chatContextBuilder.onSettingsChanged(this.settings);
 
     this.uiManager = new ChatUIManager(
         this.containerEl.children[1] as HTMLElement,
         () => this.sendMessage(),
-        () => this.chatSessionManager.resetChat(),
+        () => this.chatSessionManager.resetChat(false, false),
         () => this.chatSessionManager.confirmAndDiscardChat()
     );
 
@@ -180,20 +173,29 @@ export class ChatView extends ItemView {
     this.contextRetriever.onSettingsChanged();
     this.locationFetcher.onSettingsChanged(this.settings);
 
-
-    this.uiManager.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');
+    this.uiManager.appendModelMessage(`チャットウィンドウへようこそ！ ${this.llmRoleName}がお話しします。\nShift+Enterでメッセージを送信します。`);
 
     if (!this.chainWithHistory) {
         new Notice('Geminiチャット機能が利用できません。設定（APIキー、モデル名）を確認してください。', 0);
     }
+    this.updateTitle();
   }
 
   async onClose() {
     // Clean up resources if needed
   }
 
+  private updateTitle() {
+    console.log(`[MemoriaChat] updateTitle called. Display text relies on getDisplayText(): ${this.getDisplayText()}`);
+  }
+
+
   async sendMessage() {
-    if (!this.uiManager || !this.chatSessionManager || !this.promptFormatter || !this.chatContextBuilder) return;
+    if (!this.uiManager || !this.chatSessionManager || !this.promptFormatter || !this.chatContextBuilder || !this.chatLogger) {
+        console.error("[MemoriaChat] sendMessage preconditions not met. One or more managers are undefined.");
+        new Notice("チャットの送信準備ができていません。");
+        return;
+    }
 
     const rawMessageContent = this.uiManager.getInputText();
     const trimmedMessageContent = rawMessageContent.trim();
@@ -209,8 +211,7 @@ export class ChatView extends ItemView {
     const isFirstActualUserMessage = userMessageCount === 0;
 
     if (!this.chatLogger.getLogFilePath()) {
-        const currentLlmRoleName = this.getLlmRoleName(this.settings.systemPrompt || "You are a helpful assistant.");
-        await this.chatLogger.setupLogFile(currentLlmRoleName);
+        await this.chatLogger.setupLogFile(this.llmRoleName);
         if (!this.chatLogger.getLogFilePath()) {
             this.uiManager.appendModelMessage('エラー: ログファイルの作成に失敗したため、メッセージを送信できません。');
             new Notice('ログファイルの作成に失敗しました。');
@@ -252,7 +253,7 @@ export class ChatView extends ItemView {
         console.error('[MemoriaChat] Error preparing context via ChatContextBuilder:', error.message, error.stack);
         new Notice('LLMへのコンテキスト準備中にエラーが発生しました。');
         llmContext = {
-            character_setting_prompt: this.settings.systemPrompt || "あなたは親切なアシスタントです。",
+            character_setting_prompt: this.settings.systemPrompt || DEFAULT_SETTINGS.systemPrompt,
             retrieved_context_string: "記憶からの関連情報は見つかりませんでした。",
             current_time: moment().format('YYYY-MM-DD HH:mm:ss dddd'),
             current_location_string: "現在地の取得に失敗しました。",
