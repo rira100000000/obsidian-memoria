@@ -1,7 +1,7 @@
 // src/tagProfiler.ts
 import { App, Notice, TFile, moment, stringifyYaml, parseYaml } from 'obsidian';
 import ObsidianMemoria from '../main';
-import { GeminiPluginSettings } from './settings';
+import { GeminiPluginSettings, DEFAULT_SETTINGS } from './settings'; // DEFAULT_SETTINGS をインポート
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage } from "@langchain/core/messages";
 import {
@@ -10,7 +10,7 @@ import {
   TagProfilingNoteFrontmatter,
   ParsedLlmTpnData,
   SummaryNoteFrontmatter
-} from './types'; // 型定義をインポート
+} from './types';
 
 const TAG_PROFILING_NOTE_DIR = 'TagProfilingNote';
 const TAG_SCORES_FILE = 'tag_scores.json';
@@ -33,7 +33,7 @@ export class TagProfiler {
       try {
         this.chatModel = new ChatGoogleGenerativeAI({
           apiKey: this.settings.geminiApiKey,
-          model: this.settings.geminiModel,
+          model: this.settings.geminiModel, // TPN生成にもメインモデルを使用
         });
         console.log('[TagProfiler] ChatGoogleGenerativeAI model initialized.');
       } catch (error: any) {
@@ -47,7 +47,7 @@ export class TagProfiler {
   }
 
   public onSettingsChanged() {
-    this.settings = this.plugin.settings;
+    this.settings = this.plugin.settings; // 最新の設定を反映
     this.initializeChatModel();
     console.log('[TagProfiler] Settings changed, chat model re-initialized.');
   }
@@ -59,7 +59,7 @@ export class TagProfiler {
       return;
     }
 
-    console.log(`[TagProfiler] Processing SummaryNote: ${summaryNoteFile.path}`);
+    console.log(`[TagProfiler] Processing SummaryNote (or ReflectionNote): ${summaryNoteFile.path}`);
 
     const summaryNoteContent = await this.app.vault.cachedRead(summaryNoteFile);
     const frontmatterMatch = summaryNoteContent.match(/^---([\s\S]+?)---/);
@@ -69,17 +69,17 @@ export class TagProfiler {
       return;
     }
 
-    let summaryNoteFrontmatter: SummaryNoteFrontmatter;
+    let noteFrontmatter: SummaryNoteFrontmatter | any; // SummaryNote または ReflectionNote のフロントマターを想定
     try {
-      summaryNoteFrontmatter = parseYaml(frontmatterMatch[1]) as SummaryNoteFrontmatter;
+      noteFrontmatter = parseYaml(frontmatterMatch[1]);
     } catch (e) {
       console.error(`[TagProfiler] Error parsing YAML from ${summaryNoteFile.name}:`, e);
       new Notice(`エラー: ${summaryNoteFile.name} のフロントマターのYAML解析に失敗しました。`);
       return;
     }
 
-    const tags = this.extractTagsFromSummaryNote(summaryNoteFrontmatter);
-    if (!tags || tags.length === 0) {
+    const tags = noteFrontmatter.tags || []; // 'tags' フィールドからタグを取得
+    if (!Array.isArray(tags) || tags.length === 0) {
       console.log(`[TagProfiler] No tags found in ${summaryNoteFile.name}. Skipping tag profiling.`);
       return;
     }
@@ -87,12 +87,26 @@ export class TagProfiler {
     await this.ensureDirectoryExists(TAG_PROFILING_NOTE_DIR);
     const tagScores = await this.loadTagScores();
 
-    const summaryNoteLanguage = await this.getSummaryNoteLanguage(summaryNoteFrontmatter, summaryNoteContent);
-    console.log(`[TagProfiler] Detected language for ${summaryNoteFile.name}: ${summaryNoteLanguage}`);
+    // ノートの言語判定 (SummaryNoteと同様のロジックを使用)
+    const noteLanguage = await this.getNoteLanguage(noteFrontmatter, summaryNoteContent);
+    console.log(`[TagProfiler] Detected language for ${summaryNoteFile.name}: ${noteLanguage}`);
 
-    const processingPromises = tags.map(tag =>
-      this.updateTagProfileForTag(tag, summaryNoteFile, summaryNoteContent, summaryNoteFrontmatter, tagScores, summaryNoteLanguage)
-        .catch(err => {
+    // LLMのロール名とキャラクター設定を取得
+    const llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
+    const characterSettings = this.settings.systemPrompt || DEFAULT_SETTINGS.systemPrompt;
+
+
+    const processingPromises = tags.map((tag: string) => // 型を明示
+      this.updateTagProfileForTag(
+          tag,
+          summaryNoteFile,
+          summaryNoteContent,
+          noteFrontmatter,
+          tagScores,
+          noteLanguage,
+          llmRoleName, // ペルソナ名を渡す
+          characterSettings // キャラクター設定を渡す
+      ).catch(err => {
           console.error(`[TagProfiler] Error processing tag "${tag}" for ${summaryNoteFile.name}:`, err);
         })
     );
@@ -106,10 +120,6 @@ export class TagProfiler {
       console.error('[TagProfiler] Unexpected error during Promise.all for tag processing:', error);
       new Notice('タグプロファイリング処理中に予期せぬエラーが発生しました。');
     }
-  }
-
-  private extractTagsFromSummaryNote(frontmatter: SummaryNoteFrontmatter): string[] {
-    return frontmatter.tags || [];
   }
 
   private async ensureDirectoryExists(dirPath: string): Promise<void> {
@@ -148,37 +158,34 @@ export class TagProfiler {
     }
   }
 
-  private async getSummaryNoteLanguage(frontmatter: SummaryNoteFrontmatter, content: string): Promise<string> {
-    // Check title first for Japanese characters
+  private async getNoteLanguage(frontmatter: any, content: string): Promise<string> {
     if (frontmatter.title && /[ぁ-んァ-ヶｱ-ﾝﾞﾟ一-龠]/.test(frontmatter.title)) {
       return 'Japanese';
     }
-    // Then check a snippet of the content for Japanese characters
     if (/[ぁ-んァ-ヶｱ-ﾝﾞﾟ一-龠]/.test(content.substring(0, 500))) {
         return 'Japanese';
     }
-    // Default to English if no Japanese characters are prominently found
     return 'English';
   }
 
 
   private async updateTagProfileForTag(
     tagName: string,
-    summaryNoteFile: TFile,
-    summaryNoteContent: string,
-    summaryNoteFrontmatter: SummaryNoteFrontmatter,
+    sourceNoteFile: TFile, // SummaryNote または ReflectionNote
+    sourceNoteContent: string,
+    sourceNoteFrontmatter: any,
     tagScores: TagScores,
-    summaryNoteLanguage: string
+    noteLanguage: string,
+    llmRoleName: string, // ペルソナ名
+    characterSettings: string // キャラクター設定
   ): Promise<void> {
-    // Ensure chatModel is initialized before proceeding.
     if (!this.chatModel) {
       console.error("[TagProfiler] chatModel is unexpectedly null in updateTagProfileForTag. Aborting tag processing for:", tagName);
       new Notice(`タグ「${tagName}」の処理中に内部エラーが発生しました (LLMモデル未初期化)。`);
       return;
     }
 
-    console.log(`[TagProfiler] Updating profile for tag: "${tagName}" using SummaryNote: ${summaryNoteFile.name}`);
-    // Sanitize tag name for use in file names
+    console.log(`[TagProfiler] Updating profile for tag: "${tagName}" using sourceNote: ${sourceNoteFile.name}`);
     const tpnFileName = `TPN-${tagName.replace(/[\\/:*?"<>|#^[\]]/g, '_')}.md`;
     const tpnPath = `${TAG_PROFILING_NOTE_DIR}/${tpnFileName}`;
 
@@ -196,32 +203,31 @@ export class TagProfiler {
         if (existingFmMatch && existingFmMatch[1]) {
           tpnFrontmatter = parseYaml(existingFmMatch[1]) as TagProfilingNoteFrontmatter;
         } else {
-          // If frontmatter is missing or unparseable from existing file, treat as new.
           console.warn(`[TagProfiler] Could not parse frontmatter from existing TPN: ${tpnPath}. Treating as new.`);
           tpnFrontmatter = this.createInitialTpnFrontmatter(tagName);
-          existingTpnContent = null; // Discard existing content if frontmatter is bad
+          existingTpnContent = null;
           isNewTpn = true;
         }
       } catch (e) {
         console.warn(`[TagProfiler] Error parsing YAML from existing TPN: ${tpnPath}. Treating as new. Error:`, e);
         tpnFrontmatter = this.createInitialTpnFrontmatter(tagName);
-        existingTpnContent = null; // Discard existing content on YAML parse error
+        existingTpnContent = null;
         isNewTpn = true;
       }
     } else {
-      // No existing TPN file, so create new frontmatter.
       tpnFrontmatter = this.createInitialTpnFrontmatter(tagName);
       console.log(`[TagProfiler] No existing TPN for "${tagName}". Creating new: ${tpnPath}`);
     }
 
-    // Build the prompt for the LLM.
     const llmPrompt = this.buildLlmPromptForTagProfiling(
       tagName,
-      summaryNoteFile.name,
-      summaryNoteContent,
-      existingTpnContent, // Pass the loaded existing content, or null if new/unparseable
-      tpnFrontmatter,     // Pass the most up-to-date frontmatter (either new or parsed from existing)
-      summaryNoteLanguage
+      sourceNoteFile.name,
+      sourceNoteContent,
+      existingTpnContent,
+      tpnFrontmatter,
+      noteLanguage,
+      llmRoleName, // ペルソナ名を渡す
+      characterSettings // キャラクター設定を渡す
     );
 
     let llmResponseText: string;
@@ -236,7 +242,7 @@ export class TagProfiler {
     } catch (error: any) {
       console.error(`[TagProfiler] Error calling LLM for tag "${tagName}":`, error.message, error.stack);
       new Notice(`タグ「${tagName}」のプロファイル生成中にLLMエラーが発生しました。`);
-      return; // Stop processing this tag if LLM call fails.
+      return;
     }
 
     let parsedLlmData: ParsedLlmTpnData;
@@ -244,7 +250,6 @@ export class TagProfiler {
       const jsonMatch = llmResponseText.match(/```json\s*([\s\S]*?)\s*```/);
       const jsonStringToParse = jsonMatch && jsonMatch[1] ? jsonMatch[1] : llmResponseText;
       parsedLlmData = JSON.parse(jsonStringToParse) as ParsedLlmTpnData;
-      // Ensure the LLM response is for the correct tag.
       if (parsedLlmData.tag_name !== tagName) {
           console.warn(`[TagProfiler] LLM returned data for tag "${parsedLlmData.tag_name}" but expected "${tagName}". Using expected tag name.`);
           parsedLlmData.tag_name = tagName;
@@ -253,47 +258,40 @@ export class TagProfiler {
     } catch (error: any) {
       console.error(`[TagProfiler] Error parsing LLM JSON response for tag "${tagName}":`, error.message, "\nLLM Response:\n", llmResponseText);
       new Notice(`タグ「${tagName}」のLLM応答解析に失敗しました。詳細はコンソールを確認してください。`);
-      return; // Stop processing if JSON parsing fails.
+      return;
     }
 
-    // Update TPN Frontmatter with data from LLM.
-    tpnFrontmatter.tag_name = tagName; // Ensure correct tag name.
+    tpnFrontmatter.tag_name = tagName;
     tpnFrontmatter.aliases = parsedLlmData.aliases || [];
     tpnFrontmatter.updated_date = moment().format('YYYY-MM-DD HH:MM');
     tpnFrontmatter.key_themes = parsedLlmData.key_themes || [];
     tpnFrontmatter.user_sentiment = {
-      overall: parsedLlmData.user_sentiment_overall || (summaryNoteLanguage === 'Japanese' ? '不明' : 'Unknown'),
+      overall: parsedLlmData.user_sentiment_overall || (noteLanguage === 'Japanese' ? '不明' : 'Unknown'),
       details: parsedLlmData.user_sentiment_details || [],
     };
-    tpnFrontmatter.master_significance = parsedLlmData.master_significance || (summaryNoteLanguage === 'Japanese' ? '記載なし' : 'Not specified');
-    // Ensure related_tags are correctly formatted as TPN links.
+    tpnFrontmatter.master_significance = parsedLlmData.master_significance || (noteLanguage === 'Japanese' ? '記載なし' : 'Not specified');
     tpnFrontmatter.related_tags = parsedLlmData.related_tags
         ? parsedLlmData.related_tags.map(rt => `[[TPN-${rt.replace(/^TPN-/, '').replace(/[\\/:*?"<>|#^[\]]/g, '_')}]]`)
         : [];
 
-    // Update the list of summary notes. Add the current one to the beginning, ensuring uniqueness.
-    const newSummaryNoteLink = `[[${summaryNoteFile.name}]]`;
+    const newSourceNoteLink = `[[${sourceNoteFile.name}]]`;
     if (tpnFrontmatter.summary_notes) {
-      tpnFrontmatter.summary_notes = [newSummaryNoteLink, ...tpnFrontmatter.summary_notes.filter(link => link !== newSummaryNoteLink)];
+      tpnFrontmatter.summary_notes = [newSourceNoteLink, ...tpnFrontmatter.summary_notes.filter(link => link !== newSourceNoteLink)];
     } else {
-      tpnFrontmatter.summary_notes = [newSummaryNoteLink];
+      tpnFrontmatter.summary_notes = [newSourceNoteLink];
     }
-    // Optional: Limit the number of summary_notes stored to prevent excessively long lists.
-    // tpnFrontmatter.summary_notes = tpnFrontmatter.summary_notes.slice(0, 20); // Example: keep last 20
 
-    // Update tagScores for this tag.
     if (!tagScores[tagName]) {
       tagScores[tagName] = {
-        base_importance: 50, // Default importance for new tags.
-        last_mentioned_in: newSummaryNoteLink,
+        base_importance: 50,
+        last_mentioned_in: newSourceNoteLink,
         mention_frequency: 1,
       };
     } else {
       tagScores[tagName].mention_frequency = (tagScores[tagName].mention_frequency || 0) + 1;
-      tagScores[tagName].last_mentioned_in = newSummaryNoteLink;
+      tagScores[tagName].last_mentioned_in = newSourceNoteLink;
     }
 
-    // Update base_importance from LLM if provided and within valid range (0-100).
     if (parsedLlmData.new_base_importance !== undefined &&
         parsedLlmData.new_base_importance >= 0 &&
         parsedLlmData.new_base_importance <= 100) {
@@ -301,53 +299,41 @@ export class TagProfiler {
       console.log(`[TagProfiler] LLM suggested new base_importance for "${tagName}": ${parsedLlmData.new_base_importance}`);
     }
     
-    // Reflect tag_scores info in TPN frontmatter for easy reference.
     tpnFrontmatter.last_mentioned_in = tagScores[tagName].last_mentioned_in;
     tpnFrontmatter.mention_frequency = tagScores[tagName].mention_frequency;
 
-    // Construct TPN Body Content from LLM response.
-    // LLM is expected to return the complete, updated lists for contexts and opinions.
-    let tpnBodyContent = `# タグプロファイル: {{tag_name}}\n\n`; // Placeholder for tag_name
-
-    tpnBodyContent += `## 概要\n\n${parsedLlmData.body_overview || (summaryNoteLanguage === 'Japanese' ? '概要はLLMによって提供されていません。' : 'Overview not provided by LLM.')}\n\n`;
-
+    let tpnBodyContent = `# タグプロファイル: {{tag_name}}\n\n`;
+    tpnBodyContent += `## 概要\n\n${parsedLlmData.body_overview || (noteLanguage === 'Japanese' ? '概要はLLMによって提供されていません。' : 'Overview not provided by LLM.')}\n\n`;
     tpnBodyContent += `## これまでの主な文脈\n\n`;
     if (parsedLlmData.body_contexts && parsedLlmData.body_contexts.length > 0) {
         parsedLlmData.body_contexts.forEach(ctx => {
-            const datePartMatch = ctx.summary_note_link.match(/SN-(\d{8})\d{4}-/);
+            const datePartMatch = ctx.summary_note_link.match(/(?:SN-|Reflection-.*?)-(\d{8})\d{4,6}(?:-\w*)?/); // SummaryNoteとReflectionNoteのファイル名パターンに対応
             const displayDate = datePartMatch && datePartMatch[1] 
                 ? moment(datePartMatch[1], "YYYYMMDD").format("YYYY/MM/DD") 
-                : (summaryNoteLanguage === 'Japanese' ? '日付不明' : 'Unknown Date');
+                : (noteLanguage === 'Japanese' ? '日付不明' : 'Unknown Date');
             tpnBodyContent += `- **${displayDate} ${ctx.summary_note_link}**: ${ctx.context_summary}\n`;
         });
     } else {
-        // Fallback if LLM provides no contexts, or for a brand new TPN.
-        const fallbackDate = moment(summaryNoteFrontmatter.date, "YYYY-MM-DD HH:MM").format("YYYY/MM/DD");
-        tpnBodyContent += `- **${fallbackDate} [[${summaryNoteFile.name}]]**: ${summaryNoteFrontmatter.title || (summaryNoteLanguage === 'Japanese' ? 'このサマリーノートの文脈' : 'Context from this summary note')}\n`;
+        const fallbackDate = moment(sourceNoteFrontmatter.date, "YYYY-MM-DD HH:mm:ss").format("YYYY/MM/DD"); // sourceNoteFrontmatter.date を使用
+        tpnBodyContent += `- **${fallbackDate} [[${sourceNoteFile.name}]]**: ${sourceNoteFrontmatter.title || (noteLanguage === 'Japanese' ? 'このノートの文脈' : 'Context from this note')}\n`;
     }
     tpnBodyContent += `\n`;
-
     tpnBodyContent += `## ユーザーの意見・反応\n\n`;
     if (parsedLlmData.body_user_opinions && parsedLlmData.body_user_opinions.length > 0) {
         parsedLlmData.body_user_opinions.forEach(op => {
             tpnBodyContent += `- **${op.summary_note_link}**: ${op.user_opinion}\n`;
         });
     } else {
-        // Fallback if LLM provides no opinions, or for a brand new TPN.
-        tpnBodyContent += `- **[[${summaryNoteFile.name}]]**: ${summaryNoteLanguage === 'Japanese' ? 'このサマリーノートでのユーザーの意見・反応。' : "User's opinion/reaction in this summary note."}\n`;
+        tpnBodyContent += `- **[[${sourceNoteFile.name}]]**: ${noteLanguage === 'Japanese' ? 'このノートでのユーザーの意見・反応。' : "User's opinion/reaction in this note."}\n`;
     }
     tpnBodyContent += `\n`;
-
-    tpnBodyContent += `## その他メモ\n\n${parsedLlmData.body_other_notes || (summaryNoteLanguage === 'Japanese' ? '特記事項なし。' : 'No additional notes.')}\n`;
-
-    // Replace placeholder with actual tag name in the body.
+    tpnBodyContent += `## その他メモ\n\n${parsedLlmData.body_other_notes || (noteLanguage === 'Japanese' ? '特記事項なし。' : 'No additional notes.')}\n`;
     tpnBodyContent = tpnBodyContent.replace(/{{tag_name}}/g, tagName);
 
     const finalTpnContent = `---\n${stringifyYaml(tpnFrontmatter)}---\n\n${tpnBodyContent}`;
 
-    // Write the TPN file (create or modify).
     try {
-      if (isNewTpn || !(tpnFile instanceof TFile)) { // Also check if tpnFile is valid if not new
+      if (isNewTpn || !(tpnFile instanceof TFile)) {
         await this.app.vault.create(tpnPath, finalTpnContent);
         console.log(`[TagProfiler] Created TagProfilingNote: ${tpnPath}`);
       } else {
@@ -369,26 +355,25 @@ export class TagProfiler {
       updated_date: now,
       aliases: [],
       key_themes: [],
-      user_sentiment: { overall: 'Neutral', details: [] }, // Default to Neutral
+      user_sentiment: { overall: 'Neutral', details: [] },
       master_significance: '',
       related_tags: [],
       summary_notes: [],
-      // last_mentioned_in and mention_frequency will be populated when tagScores are updated.
     };
   }
 
   private buildLlmPromptForTagProfiling(
     tagName: string,
-    currentSummaryNoteFileName: string,
-    currentSummaryNoteContent: string,
+    currentSourceNoteFileName: string, // SummaryNote または ReflectionNote のファイル名
+    currentSourceNoteContent: string,
     existingTpnContent: string | null,
-    currentTpnFrontmatter: TagProfilingNoteFrontmatter, // This is the most up-to-date frontmatter before LLM call
-    noteLanguage: string
+    currentTpnFrontmatter: TagProfilingNoteFrontmatter,
+    noteLanguage: string,
+    llmRoleName: string, // ペルソナ名
+    characterSettings: string // キャラクター設定
   ): string {
     const today = moment().format('YYYY-MM-DD HH:MM');
-
-    // Extract existing contexts and opinions from existingTpnContent if available
-    let existingContextsString = "[]"; // Default to empty JSON array string
+    let existingContextsString = "[]";
     let existingOpinionsString = "[]";
 
     if (existingTpnContent) {
@@ -397,7 +382,7 @@ export class TagProfiler {
             const contextEntries = [];
             const contextLines = contextSectionMatch[1].trim().split('\n');
             for (const line of contextLines) {
-                const entryMatch = line.match(/- \*\*(?:.+?\s+)?(\[\[SN-.+?\.md\]\])\*\*: (.*)/);
+                const entryMatch = line.match(/- \*\*(?:.+?\s+)?(\[\[(?:SN-|Reflection-).*?\.md\]\])\*\*: (.*)/); // SN- と Reflection- の両方に対応
                 if (entryMatch) {
                     contextEntries.push({ summary_note_link: entryMatch[1], context_summary: entryMatch[2].trim() });
                 }
@@ -406,13 +391,12 @@ export class TagProfiler {
               existingContextsString = JSON.stringify(contextEntries, null, 2);
             }
         }
-
         const opinionSectionMatch = existingTpnContent.match(/## ユーザーの意見・反応\s*([\s\S]*?)(?=\n## その他メモ|$)/);
         if (opinionSectionMatch && opinionSectionMatch[1]) {
             const opinionEntries = [];
             const opinionLines = opinionSectionMatch[1].trim().split('\n');
             for (const line of opinionLines) {
-                const entryMatch = line.match(/- \*\*(\[\[SN-.+?\.md\]\])\*\*: (.*)/);
+                const entryMatch = line.match(/- \*\*(\[\[(?:SN-|Reflection-).*?\.md\]\])\*\*: (.*)/); // SN- と Reflection- の両方に対応
                  if (entryMatch) {
                     opinionEntries.push({ summary_note_link: entryMatch[1], user_opinion: entryMatch[2].trim() });
                 }
@@ -423,94 +407,102 @@ export class TagProfiler {
         }
     }
 
-
+    // プロンプトを更新してキャラクター設定を反映させる
     const prompt = `
-You are an AI assistant specializing in knowledge management and text analysis within Obsidian.
-Your task is to create or update a Tag Profiling Note (TPN) for the tag "${tagName}".
-The TPN should be written in ${noteLanguage}.
-The TPN helps understand the meaning, context, and importance of this tag *specifically for the user and within their interactions with you (the LLM)* over time. Avoid general encyclopedic entries for common concepts; prioritize the user's unique perspective and history with the tag.
+あなたは、以下のキャラクター設定を持つ ${llmRoleName} です。
+このキャラクター設定を完全に理解し、そのペルソナとして振る舞ってください。
 
-**Current Date:** ${today}
+あなたのキャラクター設定:
+---
+${characterSettings}
+---
 
-**Input Data:**
+あなたのタスクは、タグ「${tagName}」に関する情報を分析し、既存のタグプロファイリングノート（TPN）を更新するか、新しいTPNを作成することです。
+TPNは、このタグがユーザー（マスター）とのあなたの対話の中でどのような意味を持ち、どのように使われてきたかを記録するものです。
+あなたのキャラクターの視点から、主観的な評価や解釈を含めて記述してください。
+TPNの全てのテキスト内容は ${noteLanguage} で記述してください。
 
-1.  **Current Summary Note (SN):**
-    * File Name: \`[[${currentSummaryNoteFileName}]]\`
-    * Full Content (including frontmatter):
+**現在の日付:** ${today}
+
+**入力データ:**
+
+1.  **現在の情報源ノート (サマリーノートまたは振り返りノート):**
+    * ファイル名: \`[[${currentSourceNoteFileName}]]\`
+    * 全文 (フロントマター含む):
         \`\`\`markdown
-        ${currentSummaryNoteContent}
+        ${currentSourceNoteContent}
         \`\`\`
 
-2.  **Existing Tag Profiling Note (TPN) for "${tagName}" (Full Content, if available):**
-    ${existingTpnContent ? `\`\`\`markdown\n${existingTpnContent}\n\`\`\`` : "`None - This is a new TPN.`"}
+2.  **既存のTPN「${tagName}」の全文 (もしあれば):**
+    ${existingTpnContent ? `\`\`\`markdown\n${existingTpnContent}\n\`\`\`` : "`なし - これは新しいTPNです。`"}
 
-3.  **Parsed Existing TPN Body Data (if available, for your reference to construct updated lists):**
-    * Existing "body_contexts" (as JSON array):
+3.  **解析済みの既存TPN本文データ (もしあれば、更新リスト作成の参考に):**
+    * 既存の "body_contexts" (JSON配列形式):
         \`\`\`json
         ${existingContextsString}
         \`\`\`
-    * Existing "body_user_opinions" (as JSON array):
+    * 既存の "body_user_opinions" (JSON配列形式):
         \`\`\`json
         ${existingOpinionsString}
         \`\`\`
 
-4.  **Current TPN Frontmatter (for reference, especially for 'created_date' and existing 'summary_notes'):**
+4.  **現在のTPNフロントマター (参考用、特に 'created_date' と既存の 'summary_notes'):**
     \`\`\`yaml
     ${stringifyYaml(currentTpnFrontmatter)}
     \`\`\`
 
-**Instructions:**
+**指示:**
 
-Based on ALL the provided information (Current SN, Existing TPN full content, Parsed Existing TPN Body Data, Current TPN Frontmatter), generate a complete JSON object that represents the *updated* or *new* Tag Profiling Note for "${tagName}".
-When updating, consider the existing TPN content as historical fact and integrate the new information from the Current SN to reflect the *current* understanding and significance of the tag from the user's perspective.
+提供された全ての情報（現在の情報源ノート、既存TPN全文、解析済み既存TPN本文データ、現在のTPNフロントマター）に基づいて、タグ「${tagName}」のTPNを更新または新規作成するための完全なJSONオブジェクトを生成してください。
+あなたのキャラクターの視点から、各項目を記述してください。
 
-**Output JSON Format:**
+**出力JSON形式:**
 
-The JSON object MUST follow this structure precisely. All textual content MUST be in ${noteLanguage}.
+JSONオブジェクトは以下の構造に厳密に従ってください。全てのテキスト内容は ${noteLanguage} で、あなたのキャラクターの口調や視点を反映してください。
 
 \`\`\`json
 {
   "tag_name": "${tagName}",
-  "aliases": ["<list of aliases or related terms in ${noteLanguage}, merged from existing and new if applicable>"],
-  "key_themes": ["<list of key themes/concepts related to this tag, derived from all available info, in ${noteLanguage}, merged and updated>"],
-  "user_sentiment_overall": "<'Positive', 'Negative', 'Neutral', or ${noteLanguage} equivalent, based on overall user interactions related to this tag, updated if necessary>",
-  "user_sentiment_details": ["<specific examples or links to conversations showing sentiment, e.g., 'User expressed excitement in [[${currentSummaryNoteFileName}]] about X', in ${noteLanguage}, new details added, old ones potentially summarized or kept if still relevant>"],
-  "master_significance": "<Provide a comprehensive summary of what this tag means *specifically to the user (master)* and its significance *within their interactions with you (the LLM)*. This should synthesize information from the Current SN and historical TPN data to reflect the most current and nuanced understanding. For common concepts like 'money' or 'love', *avoid general, dictionary-like definitions*. Instead, concentrate on: How has the user valued or prioritized this concept? What specific dilemmas, goals, or perspectives related to this tag have emerged in your conversations? How have you, as the LLM, engaged with these user-specific aspects? This entire description MUST be in ${noteLanguage}. This field should be an update of any existing significance, not just an addition.>",
-  "related_tags": ["<list of other relevant TPN tag names (without 'TPN-' prefix), e.g., 'RelatedTag1', 'AnotherConcept', in ${noteLanguage}, merged and updated>"],
-  "body_overview": "<Provide an overview of how this tag or concept is specifically approached, understood, or utilized *within the context of the user's interactions with you (the LLM)*. If the tag represents a common concept, *do not provide a generic definition*. Instead, describe its particular relevance and recurring themes as observed in your conversations. For example, what kinds of discussions typically involve this tag? What is its function or role in the dialogue (e.g., a recurring problem, a goal, a point of reflection)? This section should summarize the *local and specific understanding* of the tag derived from your interactions. This MUST be in ${noteLanguage}. This field should be an update of any existing overview.>",
+  "aliases": ["<あなたのキャラクターが考える、このタグの別名や関連語のリスト。既存と新規を統合>", []],
+  "key_themes": ["<あなたのキャラクターが、全ての情報から導き出した、このタグに関連する主要なテーマや概念のリスト。既存と新規を統合>", []],
+  "user_sentiment_overall": "<あなたのキャラクターが、ユーザーのこのタグに対する全体的な感情をどう捉えているか ('Positive', 'Negative', 'Neutral', または ${noteLanguage} での表現)。必要に応じて更新>",
+  "user_sentiment_details": ["<あなたのキャラクターが、ユーザーの感情が表れていると感じた具体的な会話の例や [[${currentSourceNoteFileName}]] への言及。新しい詳細を追加し、古いものは関連性があれば保持または要約>", []],
+  "master_significance": "<あなたのキャラクターが、ユーザー（マスター）との対話を通じて、このタグがユーザーにとってどのような意味や重要性を持つと解釈しているか、その概要。一般的な定義ではなく、あなたのキャラクターの視点からのユーザー特有の分析を記述。既存の解釈を更新>",
+  "related_tags": ["<あなたのキャラクターが関連性が高いと考える他のTPNタグ名（'TPN-'プレフィックスなし）。既存と新規を統合>", []],
+  "body_overview": "<あなたのキャラクターが、このタグや概念がユーザーとの対話の中でどのように扱われ、理解され、利用されていると認識しているか、その概要。一般的な定義ではなく、あなたのキャラクターの視点から観察された、対話におけるタグの役割や繰り返されるテーマを記述。既存の概要を更新>",
   "body_contexts": [
-    // This list should be the COMPLETE, UPDATED list of contexts.
-    // Start with the new context from the Current SN.
-    // Then, append all unique historical contexts from the 'Parsed Existing TPN Body Data' (body_contexts).
-    // Example:
-    // { "summary_note_link": "[[${currentSummaryNoteFileName}]]", "context_summary": "<briefly describe the context in which '${tagName}' appeared in the Current SN, in ${noteLanguage}>" },
-    // { "summary_note_link": "[[OlderSN-1.md]]", "context_summary": "<Context from older SN 1, preserved from existing TPN>" }
+    // このリストは、更新された完全な文脈リストであるべきです。
+    // 現在の情報源ノートからの新しい文脈を先頭に追加してください。
+    // その後、「解析済みの既存TPN本文データ」の body_contexts から重複しないように歴史的な文脈を追加してください。
+    // 例:
+    // { "summary_note_link": "[[${currentSourceNoteFileName}]]", "context_summary": "<あなたのキャラクターが、'${tagName}' が現在の情報源ノートでどのような文脈で現れたと解釈したか>" },
+    // { "summary_note_link": "[[OlderNote-1.md]]", "context_summary": "<古いノート1からの文脈、既存TPNから保持>" }
   ],
   "body_user_opinions": [
-    // This list should be the COMPLETE, UPDATED list of user opinions.
-    // Start with the new user opinion from the Current SN.
-    // Then, append all unique historical opinions from the 'Parsed Existing TPN Body Data' (body_user_opinions).
-    // Example:
-    // { "summary_note_link": "[[${currentSummaryNoteFileName}]]", "user_opinion": "<describe user's opinion/reaction regarding '${tagName}' in the Current SN, in ${noteLanguage}>" },
-    // { "summary_note_link": "[[OlderSN-1.md]]", "user_opinion": "<User opinion from older SN 1, preserved from existing TPN>" }
+    // このリストは、更新された完全なユーザーの意見リストであるべきです。
+    // 現在の情報源ノートからの新しいユーザーの意見を先頭に追加してください。
+    // その後、「解析済みの既存TPN本文データ」の body_user_opinions から重複しないように歴史的な意見を追加してください。
+    // 例:
+    // { "summary_note_link": "[[${currentSourceNoteFileName}]]", "user_opinion": "<あなたのキャラクターが、現在の情報源ノートにおける '${tagName}' に関するユーザーの意見や反応をどう捉えたか>" },
+    // { "summary_note_link": "[[OlderNote-1.md]]", "user_opinion": "<古いノート1からのユーザーの意見、既存TPNから保持>" }
   ],
-  "body_other_notes": "<any other relevant notes, observations, or unresolved questions about this tag from the user's perspective, in ${noteLanguage}. This should be an update of any existing notes, integrating new insights.>",
-  "new_base_importance": "<integer between 0-100, representing your assessment of the tag's current importance to the user. Consider its frequency, user sentiment, and overall significance. If unsure, provide the current importance from tag_scores.json or a default like 50. This is a long-term perspective. If the tag's importance has significantly changed, update this value.>"
+  "body_other_notes": "<あなたのキャラクターの視点から、このタグに関するその他の関連メモ、観察、未解決の疑問点など。既存のメモを更新し、新しい洞察を統合>",
+  "new_base_importance": "<あなたのキャラクターが、このタグのユーザーにとっての現在の重要性を0から100の整数でどう評価するか。言及頻度、ユーザーの感情、総合的な意義を考慮。もし重要性が著しく変化したと判断すれば、この値を更新>"
 }
 \`\`\`
 
-**Important Considerations for Updating (if existing TPN is provided):**
+**重要な考慮事項 (既存TPNがある場合):**
 
-* **Synthesize, Don't Just Append (for overview sections):** 'master_significance', 'key_themes', and 'body_overview' should evolve. Integrate new information with old to reflect current understanding.
-* **Accumulate and Prepend (for list sections):** For 'body_contexts' and 'body_user_opinions', ensure all historical entries (from "Parsed Existing TPN Body Data") are preserved. Add the new entry from the Current SN to the *beginning* of each list. Ensure no duplicate entries based on 'summary_note_link'.
-* **Language Consistency:** All textual output in the JSON MUST be in ${noteLanguage}.
-* **base_importance:** Evaluate if the tag's importance (0-100) to the user has changed based on the new SN. Provide an updated integer value if a change is warranted from a long-term perspective.
+* **統合と進化 (概要セクション):** 'master_significance', 'key_themes', 'body_overview' は、あなたのキャラクターの現在の理解を反映するように、新しい情報を古い情報と統合・進化させてください。
+* **蓄積と先頭追加 (リストセクション):** 'body_contexts' と 'body_user_opinions' については、全ての歴史的エントリ（「解析済みの既存TPN本文データ」から）を保持し、現在の情報源ノートからの新しいエントリを各リストの*先頭*に追加してください。'summary_note_link' に基づいて重複がないようにしてください。
+* **言語とペルソナの一貫性:** JSON内の全てのテキスト出力は ${noteLanguage} で、あなたのキャラクターの口調、視点、性格設定に厳密に従ってください。
+* **base_importance:** あなたのキャラクターが、新しい情報源ノートに基づいて、このタグのユーザーにとっての重要性（0-100）が変化したと判断した場合、長期的な視点から更新された整数値を提案してください。
 
-**Output:**
+**出力:**
 
-Provide ONLY the JSON object described above. Do not include any other text, explanations, or markdown formatting around the JSON.
-Ensure the JSON is valid.
-All string content within the JSON (e.g., master_significance, context_summary, etc.) MUST be in ${noteLanguage}.
+上記で説明されたJSONオブジェクトのみを提供してください。JSONの周りに他のテキスト、説明、Markdownフォーマットを含めないでください。
+JSONが有効であることを確認してください。
+JSON内の全ての文字列コンテンツ（例: master_significance, context_summary など）は、${noteLanguage} で、あなたのキャラクターのペルソナに沿って記述してください。
 `;
     return prompt.trim();
   }

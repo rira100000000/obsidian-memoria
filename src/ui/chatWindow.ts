@@ -1,7 +1,7 @@
 // src/ui/chatWindow.ts
 import { ItemView, WorkspaceLeaf, Notice, moment, TFile, App } from 'obsidian';
 import ObsidianMemoria from '../../main';
-import { GeminiPluginSettings, DEFAULT_SETTINGS } from '../settings'; // DEFAULT_SETTINGSもインポート
+import { GeminiPluginSettings, DEFAULT_SETTINGS } from '../settings';
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
 import { RunnableWithMessageHistory } from "@langchain/core/runnables";
@@ -11,7 +11,7 @@ import {
   SystemMessagePromptTemplate,
   HumanMessagePromptTemplate
 } from "@langchain/core/prompts";
-import { SummaryGenerator } from '../summaryGenerator';
+// import { SummaryGenerator } from '../summaryGenerator'; // SummaryGenerator は不要になったためコメントアウト
 import { TagProfiler } from '../tagProfiler';
 import { ContextRetriever } from '../contextRetriever';
 import { LocationFetcher } from '../locationFetcher';
@@ -38,7 +38,7 @@ export class ChatView extends ItemView {
   private chatLogger!: ChatLogger;
 
   private llmRoleName: string;
-  private summaryGenerator: SummaryGenerator;
+  // private summaryGenerator: SummaryGenerator; // 不要になったためコメントアウト
   private tagProfiler: TagProfiler;
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianMemoria) {
@@ -47,7 +47,7 @@ export class ChatView extends ItemView {
     this.settings = plugin.settings;
     this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
 
-    this.summaryGenerator = new SummaryGenerator(this.plugin);
+    // this.summaryGenerator = new SummaryGenerator(this.plugin); // 不要になったためコメントアウト
     this.tagProfiler = new TagProfiler(this.plugin);
     this.contextRetriever = new ContextRetriever(this.plugin);
     this.locationFetcher = new LocationFetcher(this.plugin);
@@ -68,9 +68,6 @@ export class ChatView extends ItemView {
     if (this.chatLogger) {
         this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
     }
-
-    // const characterSettingPrompt = this.settings.systemPrompt || DEFAULT_SETTINGS.systemPrompt; // この行は不要
-    // systemPromptの値はChatContextBuilder経由で渡される
 
     if (this.chatSessionManager) {
         this.chatSessionManager.updateLlmRoleName(this.llmRoleName);
@@ -130,7 +127,7 @@ export class ChatView extends ItemView {
         this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
     }
 
-    this.summaryGenerator.onSettingsChanged();
+    // this.summaryGenerator.onSettingsChanged(); // 不要になったためコメントアウト
     this.tagProfiler.onSettingsChanged();
     this.contextRetriever.onSettingsChanged();
     this.locationFetcher.onSettingsChanged(this.settings);
@@ -155,7 +152,7 @@ export class ChatView extends ItemView {
     this.uiManager = new ChatUIManager(
         this.containerEl.children[1] as HTMLElement,
         () => this.sendMessage(),
-        () => this.chatSessionManager.resetChat(false, false),
+        () => this.chatSessionManager.resetChat(false), // skipSummaryAndReflection は resetChat のデフォルト値に依存
         () => this.chatSessionManager.confirmAndDiscardChat()
     );
 
@@ -164,7 +161,7 @@ export class ChatView extends ItemView {
         this.plugin,
         this.uiManager,
         this.chatLogger,
-        this.summaryGenerator,
+        // this.summaryGenerator, // 引数から削除
         this.tagProfiler,
         this.llmRoleName
     );
