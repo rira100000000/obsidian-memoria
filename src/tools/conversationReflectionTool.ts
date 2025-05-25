@@ -1,5 +1,5 @@
 // src/tools/conversationReflectionTool.ts
-import { StructuredTool } from "@langchain/core/tools"; // Tool から StructuredTool に変更
+import { StructuredTool } from "@langchain/core/tools";
 import { App, TFile, moment, Notice, normalizePath, stringifyYaml } from 'obsidian';
 import { BaseMessage } from "@langchain/core/messages";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
@@ -18,7 +18,6 @@ interface ReflectionLLMResponse {
     reflectionBody: string;
 }
 
-// Zodスキーマの定義 (変更なし)
 const ConversationReflectionToolSchema = z.object({
     conversationHistory: z.array(z.object({
         type: z.string().describe("Type of the message (e.g., 'human', 'ai', 'system', 'tool')"),
@@ -28,12 +27,9 @@ const ConversationReflectionToolSchema = z.object({
     fullLogFileName: z.string().describe("The filename of the full conversation log (e.g., 'YYYYMMDDHHmmss.md') that this reflection is based on.")
 });
 const TAG_SCORES_FILE = 'tag_scores.json';
-// Toolの入力型をZodスキーマから推論 (変更なし)
 export type ConversationReflectionToolInput = z.infer<typeof ConversationReflectionToolSchema>;
 
-// StructuredTool を継承し、型パラメータにスキーマの型を指定
 export class ConversationReflectionTool extends StructuredTool<typeof ConversationReflectionToolSchema> {
-    // schema プロパティは StructuredTool の要件
     schema = ConversationReflectionToolSchema;
 
     name = "conversation_reflection_and_summary_tool";
@@ -48,18 +44,22 @@ This tool helps in consolidating learnings and key points from the dialogue into
     private llm: ChatGoogleGenerativeAI | null = null;
     private keywordLlm: ChatGoogleGenerativeAI | null = null;
     private tagProfiler: TagProfiler;
+    private toolInstanceId: string; // インスタンスIDを追加
 
     constructor(plugin: ObsidianMemoria, llm?: ChatGoogleGenerativeAI) {
-        super(); // StructuredTool のコンストラクタを呼び出す
+        super();
         this.plugin = plugin;
         this.app = plugin.app;
         this.settings = plugin.settings;
+        this.toolInstanceId = Math.random().toString(36).substring(2, 8); // インスタンスIDを初期化
+        console.log(`[ConversationReflectionTool][${this.toolInstanceId}] New instance created.`);
         this.llm = llm || this.initializeLlm();
         this.keywordLlm = this.initializeKeywordLlm();
-        this.tagProfiler = new TagProfiler(this.plugin);
+        this.tagProfiler = new TagProfiler(this.plugin); // TagProfilerもIDを持つとデバッグしやすいかも
     }
 
     private initializeLlm(): ChatGoogleGenerativeAI | null {
+        console.log(`[ConversationReflectionTool][${this.toolInstanceId}] initializeLlm CALLED.`);
         if (this.settings.geminiApiKey && this.settings.geminiModel) {
             try {
                 return new ChatGoogleGenerativeAI({
@@ -67,15 +67,16 @@ This tool helps in consolidating learnings and key points from the dialogue into
                     model: this.settings.geminiModel,
                 });
             } catch (e: any) {
-                console.error("[ConversationReflectionTool] メインLLMの初期化に失敗しました:", e.message);
+                console.error(`[ConversationReflectionTool][${this.toolInstanceId}] メインLLMの初期化に失敗しました:`, e.message);
                 return null;
             }
         }
-        console.warn("[ConversationReflectionTool] Gemini APIキーまたはモデルが設定されていないため、メインLLMを初期化できません。");
+        console.warn(`[ConversationReflectionTool][${this.toolInstanceId}] Gemini APIキーまたはモデルが設定されていないため、メインLLMを初期化できません。`);
         return null;
     }
 
     private initializeKeywordLlm(): ChatGoogleGenerativeAI | null {
+        console.log(`[ConversationReflectionTool][${this.toolInstanceId}] initializeKeywordLlm CALLED.`);
         const keywordModelName = this.settings.keywordExtractionModel || this.settings.geminiModel;
         if (this.settings.geminiApiKey && keywordModelName) {
             try {
@@ -84,22 +85,23 @@ This tool helps in consolidating learnings and key points from the dialogue into
                     model: keywordModelName,
                 });
             } catch (e: any) {
-                console.error("[ConversationReflectionTool] キーワード抽出用LLMの初期化に失敗しました:", e.message);
+                console.error(`[ConversationReflectionTool][${this.toolInstanceId}] キーワード抽出用LLMの初期化に失敗しました:`, e.message);
                 return null;
             }
         }
-        console.warn("[ConversationReflectionTool] Gemini APIキーまたはキーワード抽出用モデルが設定されていないため、キーワード抽出用LLMを初期化できません。");
+        console.warn(`[ConversationReflectionTool][${this.toolInstanceId}] Gemini APIキーまたはキーワード抽出用モデルが設定されていないため、キーワード抽出用LLMを初期化できません。`);
         return null;
     }
 
     public onSettingsChanged(): void {
+        console.log(`[ConversationReflectionTool][${this.toolInstanceId}] onSettingsChanged CALLED.`);
         this.settings = this.plugin.settings;
         this.llm = this.initializeLlm();
         this.keywordLlm = this.initializeKeywordLlm();
         if (this.tagProfiler && typeof (this.tagProfiler as any).onSettingsChanged === 'function') {
             (this.tagProfiler as any).onSettingsChanged();
         }
-        console.log('[ConversationReflectionTool] 設定が変更され、LLMおよびTagProfilerが再初期化/更新されました。');
+        console.log(`[ConversationReflectionTool][${this.toolInstanceId}] 設定が変更され、LLMおよびTagProfilerが再初期化/更新されました。`);
     }
 
     private formatConversationHistoryForPrompt(history: Array<{type: string, content: string}>, llmRoleNameToUse: string): string {
@@ -112,6 +114,7 @@ This tool helps in consolidating learnings and key points from the dialogue into
     }
 
     private async loadTagScores(): Promise<TagScores> {
+        console.log(`[ConversationReflectionTool][${this.toolInstanceId}] loadTagScores CALLED.`);
         try {
             const fileExists = await this.app.vault.adapter.exists(TAG_SCORES_FILE);
             if (fileExists) {
@@ -119,16 +122,19 @@ This tool helps in consolidating learnings and key points from the dialogue into
                 return JSON.parse(content) as TagScores;
             }
         } catch (error) {
-            console.error(`[ConversationReflectionTool] ${TAG_SCORES_FILE} の読み込みエラー:`, error);
+            console.error(`[ConversationReflectionTool][${this.toolInstanceId}] ${TAG_SCORES_FILE} の読み込みエラー:`, error);
         }
         return {};
     }
 
     private async extractTagsFromReflectionBody(reflectionBody: string, existingTags: string[], llmRoleName: string): Promise<string[]> {
+        const callId = Math.random().toString(36).substring(2, 6);
+        console.log(`[ConversationReflectionTool][${this.toolInstanceId}][TagExtract-${callId}] extractTagsFromReflectionBody CALLED.`);
         if (!this.keywordLlm) {
-            console.warn("[ConversationReflectionTool] キーワード抽出用LLMが利用できないため、タグ抽出をスキップします。");
+            console.warn(`[ConversationReflectionTool][${this.toolInstanceId}][TagExtract-${callId}] キーワード抽出用LLMが利用できないため、タグ抽出をスキップします。`);
             return [];
         }
+        // (prompt definition is unchanged)
         const keywordExtractionPrompt = `
 あなたはテキスト分析アシスタントです。
 以下の「振り返りノートの本文」を読み、その内容を最もよく表すキーワードを5つ以内で抽出してください。
@@ -148,8 +154,10 @@ ${existingTags.length > 0 ? existingTags.join(', ') : 'なし'}
 JSON配列のみを返し、他のテキストは含めないでください。
 `;
         try {
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][TagExtract-${callId}] Invoking keywordLlm...`);
             const response = await this.keywordLlm.invoke(keywordExtractionPrompt);
             const responseContent = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][TagExtract-${callId}] keywordLlm response received: ${responseContent.substring(0,100)}...`);
             
             let extractedKeywords: string[] = [];
             const jsonMatch = responseContent.match(/```json\s*([\s\S]*?)\s*```/);
@@ -157,14 +165,14 @@ JSON配列のみを返し、他のテキストは含めないでください。
                 try {
                     extractedKeywords = JSON.parse(jsonMatch[1]);
                 } catch(e: any) {
-                    console.error("[ConversationReflectionTool] Failed to parse JSON from ```json block in tag extraction response:", e, "Content was:", jsonMatch[1]);
+                    console.error(`[ConversationReflectionTool][${this.toolInstanceId}][TagExtract-${callId}] Failed to parse JSON from json block:`, e, "Content was:", jsonMatch[1]);
                     return [];
                 }
             } else {
                  try {
                     extractedKeywords = JSON.parse(responseContent);
                 } catch (e: any) {
-                    console.warn("[ConversationReflectionTool] Tag Extraction LLM response was not a direct JSON array. Error:", e, "Raw content:", responseContent);
+                    console.warn(`[ConversationReflectionTool][${this.toolInstanceId}][TagExtract-${callId}] Tag Extraction LLM response was not direct JSON. Error:`, e, "Raw content:", responseContent);
                     if (typeof responseContent === 'string' && !responseContent.startsWith('[')) {
                         extractedKeywords = responseContent.split(',').map(k => k.trim()).filter(k => k.length > 0);
                     } else {
@@ -174,16 +182,19 @@ JSON配列のみを返し、他のテキストは含めないでください。
             }
 
             if (Array.isArray(extractedKeywords)) {
-                return extractedKeywords.map(tag =>
+                const processedTags = extractedKeywords.map(tag =>
                     tag.trim()
-                       .replace(/\s+/g, '-')
-                       .replace(/[#,[\]{}|:"<>/\\?*^()']/g, '') 
-                       .substring(0, 50) 
+                        .replace(/\s+/g, '-') 
+                        .replace(/[#,[\]{}|:"<>/\\?*^()']/g, '') 
+                        .substring(0, 50) 
                 ).filter(tag => tag.length > 0);
+                console.log(`[ConversationReflectionTool][${this.toolInstanceId}][TagExtract-${callId}] Processed tags:`, processedTags);
+                return processedTags;
             }
+            console.warn(`[ConversationReflectionTool][${this.toolInstanceId}][TagExtract-${callId}] Extracted keywords is not an array.`);
             return [];
         } catch (error) {
-            console.error("[ConversationReflectionTool] Error during tag extraction from reflection body:", error);
+            console.error(`[ConversationReflectionTool][${this.toolInstanceId}][TagExtract-${callId}] Error during tag extraction:`, error);
             return [];
         }
     }
@@ -192,27 +203,26 @@ JSON配列のみを返し、他のテキストは含めないでください。
         return title.replace(/[\\/:*?"<>|#^[\]]/g, '').replace(/\s+/g, '_').substring(0, 50);
     }
 
-    // _call メソッドの引数の型が z.infer<typeof this.schema> (つまり ConversationReflectionToolInput) になる
-    protected async _call(input: ConversationReflectionToolInput): Promise<string> {
-        console.log('[ConversationReflectionTool DEBUG] _call invoked with input:', JSON.stringify(input));
+    protected async _call(input: ConversationReflectionToolInput): Promise<TFile | string> {
+        const callId = Math.random().toString(36).substring(2, 8); // この呼び出し固有のID
+        console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] _call CALLED with input:`, JSON.stringify(input).substring(0, 200) + "...");
 
         if (!this.llm) {
             const errorMsg = "エラー: メインLLMが初期化されていません。APIキーとモデル設定を確認してください。";
-            console.error(`[ConversationReflectionTool] ${errorMsg}`);
+            console.error(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] ${errorMsg}`);
             return errorMsg;
         }
 
         const { conversationHistory, llmRoleName, fullLogFileName } = input;
-        
         const llmRoleNameToUse = (llmRoleName && llmRoleName.trim()) ? llmRoleName.trim() : (this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName);
 
         if (!fullLogFileName || !fullLogFileName.trim()) {
-            console.error("[ConversationReflectionTool DEBUG] fullLogFileName is missing in input.");
+            console.error(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] fullLogFileName is missing.`);
             return "エラー: fullLogFileName が提供されていません。";
         }
         if (!conversationHistory || conversationHistory.length === 0) {
-            console.warn("[ConversationReflectionTool DEBUG] No conversation history provided.");
-            return "振り返りを生成するための会話履歴が提供されていません。";
+            console.warn(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] No conversation history provided.`);
+            return "エラー: 振り返りを生成するための会話履歴が提供されていません。";
         }
 
         const formattedHistory = this.formatConversationHistoryForPrompt(conversationHistory, llmRoleNameToUse);
@@ -259,9 +269,13 @@ JSONオブジェクトのみを返し、他のテキストは含めないでく�
 "reflectionBody"内の改行は \\n としてエスケープしてください。
 `;
         try {
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Displaying Notice: ${llmRoleNameToUse}が会話の振り返り兼サマリーを作成中です...`);
             new Notice(`${llmRoleNameToUse}が会話の振り返り兼サマリーを作成中です...`, 4000);
+            
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Invoking main LLM for reflection...`);
             const llmResponse = await this.llm.invoke(reflectionPrompt);
             const responseContent = typeof llmResponse.content === 'string' ? llmResponse.content : JSON.stringify(llmResponse.content);
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Main LLM response received: ${responseContent.substring(0,200)}...`);
             
             let parsedResponse: ReflectionLLMResponse;
             try {
@@ -271,25 +285,29 @@ JSONオブジェクトのみを返し、他のテキストは含めないでく�
                 } else {
                     parsedResponse = JSON.parse(responseContent) as ReflectionLLMResponse;
                 }
+                console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] LLM response parsed successfully.`);
             } catch (parseError: any) {
-                console.error("[ConversationReflectionTool DEBUG] Failed to parse LLM response JSON:", parseError, "Raw response was:", responseContent);
+                console.error(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Failed to parse LLM response JSON:`, parseError, "Raw response:", responseContent);
                 return `エラー: LLMからの応答の解析に失敗しました。応答形式が不正です。詳細はコンソールを確認してください。 (Raw: ${responseContent.substring(0,100)}...)`;
             }
 
             if (!parsedResponse.conversationTitle || !parsedResponse.reflectionBody) {
-                throw new Error("LLMからの応答に必要な情報（タイトルまたは本文）が欠けています。");
+                console.error(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] LLM response missing title or body. Parsed:`, parsedResponse);
+                return "エラー: LLMからの応答に必要な情報（タイトルまたは本文）が欠けています。";
             }
             
             const reflectionBodyContent = parsedResponse.reflectionBody.replace(/\\n/g, '\n');
-            const tagScores = await this.loadTagScores();
+            const tagScores = await this.loadTagScores(); // 内部でログ出力あり
             const existingVaultTags = Object.keys(tagScores);
-            const extractedContentTags = await this.extractTagsFromReflectionBody(reflectionBodyContent, existingVaultTags, llmRoleNameToUse);
+            const extractedContentTags = await this.extractTagsFromReflectionBody(reflectionBodyContent, existingVaultTags, llmRoleNameToUse); // 内部でログ出力あり
 
             const summaryNoteDir = 'SummaryNote';
             const normalizedDir = normalizePath(summaryNoteDir);
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Checking/creating directory: ${normalizedDir}`);
             const dirExists = await this.app.vault.adapter.exists(normalizedDir);
             if (!dirExists) {
                 await this.app.vault.createFolder(normalizedDir);
+                console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Directory created: ${normalizedDir}`);
             }
 
             const logFileMoment = moment(fullLogFileName.replace(/\.md$/, ''), "YYYYMMDDHHmmss");
@@ -297,8 +315,10 @@ JSONオブジェクトのみを返し、他のテキストは含めないでく�
             const sanitizedTitle = this.sanitizeTitleForFilename(parsedResponse.conversationTitle);
             const noteFileName = `SN-${summaryNoteTimestamp}-${sanitizedTitle}.md`;
             const filePath = normalizePath(`${normalizedDir}/${noteFileName}`);
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Determined file path: ${filePath}`);
 
             const finalTags = Array.from(new Set([llmRoleNameToUse, ...extractedContentTags, ...(parsedResponse.tags || [])]));
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Final tags for note:`, finalTags);
 
             const frontmatter: SummaryNoteFrontmatter = {
                 title: parsedResponse.conversationTitle,
@@ -319,47 +339,48 @@ ${stringifyYaml(frontmatter)}---
 
 ${reflectionBodyContent}
 `;
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Creating file at: ${filePath}`);
             const createdFile = await this.app.vault.create(filePath, fileContent);
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] File creation result (instanceof TFile): ${createdFile instanceof TFile}. Path: ${createdFile.path}`);
 
-            if (!(createdFile instanceof TFile)) {
-                throw new Error("振り返りノートファイルの作成に失敗しました (TFileオブジェクトが返されませんでした)。");
-            }
-
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Displaying Notice: ${llmRoleNameToUse}による振り返り(サマリー)が ${createdFile.basename} に保存されました。`);
             new Notice(`${llmRoleNameToUse}による振り返り(サマリー)が ${createdFile.basename} に保存されました。`);
             
-            if (createdFile instanceof TFile && finalTags.length > 0) {
+            if (finalTags.length > 0) {
+                console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Starting tag profiling for ${createdFile.basename}...`);
                 try {
+                    console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Displaying Notice: ${createdFile.basename} のタグプロファイル処理を開始します...`);
                     new Notice(`${createdFile.basename} のタグプロファイル処理を開始します...`);
-                    await this.tagProfiler.processSummaryNote(createdFile);
+                    await this.tagProfiler.processSummaryNote(createdFile); // TagProfiler内部のログに期待
+                    console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Tag profiling completed for ${createdFile.basename}.`);
+                    console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Displaying Notice: ${createdFile.basename} のタグプロファイル処理が完了しました。`);
                     new Notice(`${createdFile.basename} のタグプロファイル処理が完了しました。`);
                 } catch (tpError: any) {
-                    console.error(`[ConversationReflectionTool DEBUG] Error during tag profiling for ${createdFile.basename}:`, tpError, tpError.stack);
+                    console.error(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Error during tag profiling for ${createdFile.basename}:`, tpError, tpError.stack);
+                    console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Displaying Notice: ${createdFile.basename} のタグプロファイル処理中にエラーが発生しました。`);
                     new Notice(`${createdFile.basename} のタグプロファイル処理中にエラーが発生しました。`);
                 }
             }
-            return `Reflection and summary note saved to: ${createdFile.path}`;
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] _call FINISHED successfully. Returning TFile.`);
+            return createdFile;
 
         } catch (error: any) {
-            console.error("[ConversationReflectionTool DEBUG] Error during reflection/summary generation or saving:", error, error.stack);
-            new Notice(`${llmRoleNameToUse}による振り返り兼サマリーの生成または保存に失敗しました。詳細はコンソールを確認してください。`);
-            return `Error in reflection/summary: ${error.message}`;
+            console.error(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] UNEXPECTED ERROR in _call:`, error, error.stack);
+            // このNoticeはChatSessionManager側でも表示される可能性があるため、重複を避けるか、どちらかに統一するか検討。
+            // ここではTool内部のエラーとして残し、ChatSessionManager側ではToolからの戻り値を見て判断する。
+            // new Notice(`${llmRoleNameToUse}による振り返り兼サマリーの生成または保存に失敗しました。詳細はコンソールを確認してください。`);
+            const errorMessage = `エラー: ${llmRoleNameToUse}による振り返り兼サマリーの生成または保存に失敗しました。詳細: ${error.message}`;
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] _call FINISHED with error. Returning error string: ${errorMessage}`);
+            return errorMessage;
         }
     }
 
-    // このメソッドはToolとして直接呼び出されるわけではないので、外部からのヘルパーとして残すか検討。
-    // Agent経由で _call を使うように統一する場合は不要になる可能性が高い。
-    public async generateAndSaveReflection(history: BaseMessage[], roleName: string, logFileName: string): Promise<string> {
-        const roleNameToUse = roleName && roleName.trim() ? roleName.trim() : (this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName);
-        
-        const inputConversationHistory = history.map(msg => ({
-            type: msg._getType(),
-            content: String(msg.content) 
-        }));
-
-        // StructuredToolの_callを呼び出す
+    public async generateAndSaveReflection(history: BaseMessage[], roleName: string, logFileName: string): Promise<TFile | string> {
+        const callId = Math.random().toString(36).substring(2, 8);
+        console.log(`[ConversationReflectionTool][${this.toolInstanceId}][GenSave-${callId}] generateAndSaveReflection CALLED. Delegating to _call.`);
         return this._call({
-            conversationHistory: inputConversationHistory,
-            llmRoleName: roleNameToUse,
+            conversationHistory: history.map(msg => ({ type: msg._getType(), content: String(msg.content) })),
+            llmRoleName: roleName && roleName.trim() ? roleName.trim() : (this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName),
             fullLogFileName: logFileName
         });
     }
