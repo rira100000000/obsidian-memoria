@@ -35,17 +35,23 @@ export class ChatView extends ItemView {
   private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
   private contextRetriever: ContextRetriever;
   private locationFetcher: LocationFetcher;
-  private chatLogger!: ChatLogger;
+  private chatLogger!: ChatLogger; // ChatLogger のインスタンスを保持
 
   private llmRoleName: string;
   // private summaryGenerator: SummaryGenerator; // 不要になったためコメントアウト
   private tagProfiler: TagProfiler;
+  private viewInstanceId: string; // デバッグ用のビューインスタンスID
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianMemoria) {
     super(leaf);
     this.plugin = plugin;
     this.settings = plugin.settings;
     this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
+    this.viewInstanceId = Math.random().toString(36).substring(2, 8);
+    console.log(`[ChatView][${this.viewInstanceId}] Constructor called. Initial RoleName: ${this.llmRoleName}`);
+
+    // ChatLogger の初期化は onOpen で行う
+    // this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
 
     // this.summaryGenerator = new SummaryGenerator(this.plugin); // 不要になったためコメントアウト
     this.tagProfiler = new TagProfiler(this.plugin);
@@ -60,18 +66,15 @@ export class ChatView extends ItemView {
   }
 
   private initializeChatModel() {
+    console.log(`[ChatView][${this.viewInstanceId}] initializeChatModel called.`);
     this.settings = this.plugin.settings;
     this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
 
     this.promptFormatter.updateSettings(this.settings);
     this.chatContextBuilder.onSettingsChanged(this.settings);
-    if (this.chatLogger) {
-        this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
-    }
-
-    if (this.chatSessionManager) {
-        this.chatSessionManager.updateLlmRoleName(this.llmRoleName);
-    }
+    
+    // ChatLogger は onSettingsChanged または onOpen でインスタンスが管理される
+    // ChatSessionManager も同様
 
     const systemPromptTemplateString = this.promptFormatter.getSystemPromptTemplate();
 
@@ -92,48 +95,69 @@ export class ChatView extends ItemView {
         ]);
 
         const chain = prompt.pipe(this.chatModel);
-        this.chainWithHistory = new RunnableWithMessageHistory({
-            runnable: chain,
-            getMessageHistory: (_sessionId) => this.chatSessionManager.messageHistory,
-            inputMessagesKey: "input",
-            historyMessagesKey: "history",
-        });
-        console.log(`[MemoriaChat] Chat model initialized. LLM Role: ${this.llmRoleName}`);
+        
+        // getMessageHistory が ChatSessionManager のインスタンスメソッドを参照するようにする
+        // ChatSessionManager が初期化された後に chainWithHistory を設定する必要がある
+        if (this.chatSessionManager) {
+            this.chainWithHistory = new RunnableWithMessageHistory({
+                runnable: chain,
+                getMessageHistory: (_sessionId) => this.chatSessionManager.messageHistory,
+                inputMessagesKey: "input",
+                historyMessagesKey: "history",
+            });
+            console.log(`[ChatView][${this.viewInstanceId}] Chat model and chainWithHistory initialized. LLM Role: ${this.llmRoleName}`);
+        } else {
+            console.warn(`[ChatView][${this.viewInstanceId}] chatSessionManager not yet initialized. chainWithHistory will be set up later.`);
+            // chainWithHistory は onOpen の最後や sendMessage の直前で再確認・再設定が必要になる場合がある
+        }
       } catch (error: any) {
-        console.error('[MemoriaChat] Failed to initialize ChatGoogleGenerativeAI model or chain:', error.message);
+        console.error(`[ChatView][${this.viewInstanceId}] Failed to initialize ChatGoogleGenerativeAI model or chain:`, error.message);
         new Notice('Geminiモデルまたはチャットチェーンの初期化に失敗しました。');
         this.chatModel = null;
         this.chainWithHistory = null;
       }
     } else {
-      console.log('[MemoriaChat] API key or model name not set. Chat model not initialized.');
+      console.log(`[ChatView][${this.viewInstanceId}] API key or model name not set. Chat model not initialized.`);
       this.chatModel = null;
       this.chainWithHistory = null;
     }
   }
 
   onSettingsChanged() {
+    console.log(`[ChatView][${this.viewInstanceId}] onSettingsChanged called.`);
+    const oldRoleName = this.llmRoleName;
     this.settings = this.plugin.settings;
     this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
+    console.log(`[ChatView][${this.viewInstanceId}] RoleName changed from '${oldRoleName}' to '${this.llmRoleName}'`);
 
-    this.initializeChatModel();
+    // ChatLogger を新しい設定 (特に llmRoleName) で再初期化
+    // 以前の chatLogger インスタンスがあった場合、その ID もログに出力
+    const oldChatLoggerId = this.chatLogger ? (this.chatLogger as any).instanceId : 'N/A';
+    this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
+    console.log(`[ChatView][${this.viewInstanceId}] ChatLogger re-initialized. Old ID: ${oldChatLoggerId}, New ID: ${(this.chatLogger as any).instanceId}`);
 
+    // initializeChatModel は ChatSessionManager ができてから呼ぶ方が安全
+    // ChatSessionManager も新しい ChatLogger を参照するように更新
     if (this.chatSessionManager) {
         this.chatSessionManager.updateLlmRoleName(this.llmRoleName);
-    }
-    if (this.chatLogger) {
-        this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
+        this.chatSessionManager.updateChatLogger(this.chatLogger);
     } else {
-        this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
+        console.warn(`[ChatView][${this.viewInstanceId}] onSettingsChanged: chatSessionManager not yet initialized. Updates will be applied upon its creation.`);
     }
+    
+    // initializeChatModel は chainWithHistory を再生成する可能性があり、
+    // chainWithHistory は chatSessionManager.messageHistory を参照するため、
+    // chatSessionManager が確実に存在し、更新された後に呼ぶのが望ましい。
+    this.initializeChatModel(); // LLMモデルとチェーンを再初期化 (ChatSessionManager の依存関係を考慮)
 
-    // this.summaryGenerator.onSettingsChanged(); // 不要になったためコメントアウト
+
     this.tagProfiler.onSettingsChanged();
     this.contextRetriever.onSettingsChanged();
     this.locationFetcher.onSettingsChanged(this.settings);
+    this.chatContextBuilder.onSettingsChanged(this.settings);
 
     this.updateTitle();
-    console.log('[MemoriaChat] Settings changed, relevant modules re-initialized/updated.');
+    console.log(`[ChatView][${this.viewInstanceId}] Settings changed, relevant modules re-initialized/updated.`);
   }
 
   getViewType() { return CHAT_VIEW_TYPE; }
@@ -141,55 +165,70 @@ export class ChatView extends ItemView {
   getIcon() { return 'messages-square'; }
 
   async onOpen() {
+    console.log(`[ChatView][${this.viewInstanceId}] onOpen called.`);
     this.settings = this.plugin.settings;
     this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
+    console.log(`[ChatView][${this.viewInstanceId}] RoleName set to: ${this.llmRoleName}`);
 
+    // ChatLogger の初期化 (コンストラクタから移動)
     this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
+    console.log(`[ChatView][${this.viewInstanceId}] ChatLogger initialized in onOpen. ID: ${(this.chatLogger as any).instanceId}`);
 
     this.promptFormatter.updateSettings(this.settings);
     this.chatContextBuilder.onSettingsChanged(this.settings);
+    this.locationFetcher.onSettingsChanged(this.settings);
+    this.contextRetriever.onSettingsChanged();
+    this.tagProfiler.onSettingsChanged();
+
 
     this.uiManager = new ChatUIManager(
         this.containerEl.children[1] as HTMLElement,
         () => this.sendMessage(),
-        () => this.chatSessionManager.resetChat(false), // skipSummaryAndReflection は resetChat のデフォルト値に依存
+        () => this.chatSessionManager.resetChat(false),
         () => this.chatSessionManager.confirmAndDiscardChat()
     );
+    console.log(`[ChatView][${this.viewInstanceId}] UIManager initialized.`);
 
     this.chatSessionManager = new ChatSessionManager(
         this.app,
         this.plugin,
         this.uiManager,
-        this.chatLogger,
-        // this.summaryGenerator, // 引数から削除
+        this.chatLogger, // ここで初期化済みの chatLogger を渡す
         this.tagProfiler,
         this.llmRoleName
     );
+    console.log(`[ChatView][${this.viewInstanceId}] ChatSessionManager initialized, passing ChatLogger ID: ${(this.chatLogger as any).instanceId}`);
 
-    this.initializeChatModel();
-    this.contextRetriever.onSettingsChanged();
-    this.locationFetcher.onSettingsChanged(this.settings);
+    // ChatSessionManager が初期化された後に initializeChatModel を呼ぶ
+    this.initializeChatModel(); 
 
     this.uiManager.appendModelMessage(`チャットウィンドウへようこそ！ ${this.llmRoleName}がお話しします。\nShift+Enterでメッセージを送信します。`);
 
-    if (!this.chainWithHistory) {
+    if (!this.chainWithHistory && this.settings.geminiApiKey && this.settings.geminiModel) {
+        // initializeChatModel で chainWithHistory が設定されなかった場合のフォールバックまたは警告
+        console.warn(`[ChatView][${this.viewInstanceId}] chainWithHistory is still null after onOpen initializations. This might indicate an issue if API key and model are set.`);
+        new Notice('チャットモデルの接続に問題がある可能性があります。設定を確認してください。', 0);
+    } else if (!this.settings.geminiApiKey || !this.settings.geminiModel) {
         new Notice('Geminiチャット機能が利用できません。設定（APIキー、モデル名）を確認してください。', 0);
     }
     this.updateTitle();
   }
 
   async onClose() {
+    console.log(`[ChatView][${this.viewInstanceId}] onClose called.`);
     // Clean up resources if needed
   }
 
   private updateTitle() {
-    console.log(`[MemoriaChat] updateTitle called. Display text relies on getDisplayText(): ${this.getDisplayText()}`);
+    const newDisplayText = this.getDisplayText();
+    console.log(`[ChatView][${this.viewInstanceId}] updateTitle called. Current display text: ${newDisplayText}`);
   }
 
 
   async sendMessage() {
+    console.log(`[ChatView][${this.viewInstanceId}] sendMessage called.`);
     if (!this.uiManager || !this.chatSessionManager || !this.promptFormatter || !this.chatContextBuilder || !this.chatLogger) {
-        console.error("[MemoriaChat] sendMessage preconditions not met. One or more managers are undefined.");
+        console.error(`[ChatView][${this.viewInstanceId}] sendMessage preconditions not met. UIManager: ${!!this.uiManager}, ChatSessionManager: ${!!this.chatSessionManager}, PromptFormatter: ${!!this.promptFormatter}, ChatContextBuilder: ${!!this.chatContextBuilder}, ChatLogger: ${!!this.chatLogger} (ID: ${this.chatLogger ? (this.chatLogger as any).instanceId : 'N/A'})`);
         new Notice("チャットの送信準備ができていません。");
         return;
     }
@@ -206,10 +245,17 @@ export class ChatView extends ItemView {
     const messages = await this.chatSessionManager.getMessages();
     const userMessageCount = messages.filter(msg => msg._getType() === "human").length;
     const isFirstActualUserMessage = userMessageCount === 0;
+    console.log(`[ChatView][${this.viewInstanceId}] isFirstActualUserMessage: ${isFirstActualUserMessage}`);
 
-    if (!this.chatLogger.getLogFilePath()) {
+    // ログファイルパスの確認とセットアップ
+    let currentLogPath = this.chatLogger.getLogFilePath();
+    console.log(`[ChatView][${this.viewInstanceId}] Before setupLogFile check. Current log path from ChatLogger ID ${(this.chatLogger as any).instanceId}: ${currentLogPath}`);
+    if (!currentLogPath) {
+        console.log(`[ChatView][${this.viewInstanceId}] Log file path is null, calling setupLogFile with RoleName: ${this.llmRoleName}`);
         await this.chatLogger.setupLogFile(this.llmRoleName);
-        if (!this.chatLogger.getLogFilePath()) {
+        currentLogPath = this.chatLogger.getLogFilePath(); // 再取得
+        console.log(`[ChatView][${this.viewInstanceId}] After setupLogFile. New log path: ${currentLogPath}`);
+        if (!currentLogPath) {
             this.uiManager.appendModelMessage('エラー: ログファイルの作成に失敗したため、メッセージを送信できません。');
             new Notice('ログファイルの作成に失敗しました。');
             return;
@@ -221,10 +267,15 @@ export class ChatView extends ItemView {
     this.uiManager.resetInputField();
 
     if (!this.chainWithHistory) {
+      console.warn(`[ChatView][${this.viewInstanceId}] chainWithHistory is null before sending message. Attempting re-initialization.`);
       this.uiManager.appendModelMessage('エラー: チャットチェーンが初期化されていません。プラグイン設定を確認してください。');
       new Notice('チャット機能が利用できません。設定を確認してください。');
-      this.initializeChatModel();
-      if(!this.chainWithHistory) return;
+      this.initializeChatModel(); 
+      if(!this.chainWithHistory) {
+          console.error(`[ChatView][${this.viewInstanceId}] Re-initialization of chainWithHistory failed.`);
+          return;
+      }
+      console.log(`[ChatView][${this.viewInstanceId}] chainWithHistory re-initialized successfully.`);
     }
 
     const loadingMessageEl = this.uiManager.appendMessage('応答を待っています...', 'loading');
@@ -247,9 +298,9 @@ export class ChatView extends ItemView {
         }
 
     } catch (error: any) {
-        console.error('[MemoriaChat] Error preparing context via ChatContextBuilder:', error.message, error.stack);
+        console.error(`[ChatView][${this.viewInstanceId}] Error preparing context via ChatContextBuilder:`, error.message, error.stack);
         new Notice('LLMへのコンテキスト準備中にエラーが発生しました。');
-        llmContext = {
+        llmContext = { 
             character_setting_prompt: this.settings.systemPrompt || DEFAULT_SETTINGS.systemPrompt,
             retrieved_context_string: "記憶からの関連情報は見つかりませんでした。",
             current_time: moment().format('YYYY-MM-DD HH:mm:ss dddd'),
@@ -257,7 +308,6 @@ export class ChatView extends ItemView {
             current_weather_string: "天気情報の取得に失敗しました。",
         };
     }
-
 
     try {
       const chainInput = {
@@ -268,10 +318,12 @@ export class ChatView extends ItemView {
         current_location_string: llmContext.current_location_string,
         current_weather_string: llmContext.current_weather_string,
       };
+      console.log(`[ChatView][${this.viewInstanceId}] Invoking chainWithHistory with input:`, { ...chainInput, retrieved_context_string: chainInput.retrieved_context_string.substring(0,100)+"..."});
+
 
       const response = await this.chainWithHistory.invoke(
         chainInput,
-        { configurable: { sessionId: "obsidian-memoria-session" } }
+        { configurable: { sessionId: "obsidian-memoria-session" } } 
       );
       loadingMessageEl.remove();
       let responseText = '';
@@ -281,14 +333,14 @@ export class ChatView extends ItemView {
       } else if (response && Array.isArray(response.content) && response.content.length > 0 && typeof response.content[0] === 'object' && response.content[0] !== null && 'text' in response.content[0]) {
         responseText = (response.content[0] as any).text;
       } else {
-        console.error('[MemoriaChat] Invalid response format:', response);
+        console.error(`[ChatView][${this.viewInstanceId}] Invalid response format:`, response);
         responseText = 'エラー: 予期しない形式の応答がありました。';
       }
       this.uiManager.appendModelMessage(responseText);
       await this.chatLogger.appendLogEntry(`**${this.llmRoleName}**: ${responseText}\n`);
 
     } catch (error: any) {
-      console.error('[MemoriaChat] Error sending message:', error.message, error.stack);
+      console.error(`[ChatView][${this.viewInstanceId}] Error sending message:`, error.message, error.stack);
       loadingMessageEl.remove();
       let errorMessage = 'エラー: メッセージの送信中に問題が発生しました。';
       if (error.message) errorMessage += `\n詳細: ${error.message}`;

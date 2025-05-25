@@ -15,17 +15,18 @@ export class ChatSessionManager {
   private plugin: ObsidianMemoria;
   public messageHistory: ChatMessageHistory;
   private uiManager: ChatUIManager;
-  private chatLogger: ChatLogger;
+  private chatLogger: ChatLogger; // このインスタンスが ChatView と同期している必要がある
   // private summaryGenerator: SummaryGenerator; // 不要になる
   private tagProfiler: TagProfiler;
   private llmRoleName: string;
   private reflectionTool: ConversationReflectionTool;
+  private managerInstanceId: string; // デバッグ用のインスタンスID
 
   constructor(
     app: App,
     plugin: ObsidianMemoria,
     uiManager: ChatUIManager,
-    chatLogger: ChatLogger,
+    chatLogger: ChatLogger, // 初期インスタンスを受け取る
     // summaryGenerator: SummaryGenerator, // 引数から削除
     tagProfiler: TagProfiler,
     initialLlmRoleName: string
@@ -33,63 +34,97 @@ export class ChatSessionManager {
     this.app = app;
     this.plugin = plugin;
     this.uiManager = uiManager;
-    this.chatLogger = chatLogger;
-    // this.summaryGenerator = summaryGenerator; // 初期化を削除
-    this.tagProfiler = tagProfiler; // TagProfiler は引き続き使用
+    this.chatLogger = chatLogger; // 受け取ったインスタンスを保存
+    this.tagProfiler = tagProfiler;
     this.llmRoleName = initialLlmRoleName;
     this.messageHistory = new ChatMessageHistory();
     this.reflectionTool = new ConversationReflectionTool(this.plugin);
+    this.managerInstanceId = Math.random().toString(36).substring(2, 8);
+    console.log(`[ChatSessionManager][${this.managerInstanceId}] New instance created. Initial RoleName: ${initialLlmRoleName}. Using ChatLogger ID: ${(this.chatLogger as any).instanceId}`);
   }
 
   public updateLlmRoleName(newRoleName: string): void {
+    const oldRoleName = this.llmRoleName;
     this.llmRoleName = newRoleName;
+    console.log(`[ChatSessionManager][${this.managerInstanceId}] llmRoleName updated from '${oldRoleName}' to '${this.llmRoleName}'`);
     if (this.reflectionTool && typeof (this.reflectionTool as any).onSettingsChanged === 'function') {
         (this.reflectionTool as any).onSettingsChanged();
     }
-    // TagProfiler も設定変更を通知する必要があればここで行う
     if (this.tagProfiler && typeof (this.tagProfiler as any).onSettingsChanged === 'function') {
         (this.tagProfiler as any).onSettingsChanged();
     }
   }
 
-  public async resetChat(skipSummaryAndReflection = false): Promise<void> { // パラメータ名を変更
-    const previousLogPath = this.chatLogger.getLogFilePath();
+  /**
+   * ChatView側でChatLoggerが再初期化された場合に、このメソッドを通じて
+   * ChatSessionManagerが保持するChatLoggerインスタンスも更新します。
+   * @param newChatLogger 新しいChatLoggerインスタンス
+   */
+  public updateChatLogger(newChatLogger: ChatLogger): void {
+    const oldLoggerId = this.chatLogger ? (this.chatLogger as any).instanceId : 'N/A';
+    this.chatLogger = newChatLogger;
+    console.log(`[ChatSessionManager][${this.managerInstanceId}] ChatLogger instance updated. Old ID: ${oldLoggerId}, New ID: ${(this.chatLogger as any).instanceId}`);
+  }
+
+  public async resetChat(skipSummaryAndReflection = false): Promise<void> {
+    // previousLogPath を取得する直前に、現在の ChatLogger の状態をログに出力
+    const currentChatLoggerId = this.chatLogger ? (this.chatLogger as any).instanceId : 'N/A';
+    console.log(`[ChatSessionManager][${this.managerInstanceId}] resetChat: Attempting to get log path from ChatLogger ID: ${currentChatLoggerId}`);
+    const previousLogPath = this.chatLogger.getLogFilePath(); // ここで ChatLogger の getLogFilePath が呼ばれる
     const previousLlmRoleName = this.llmRoleName;
     const previousMessages = await this.messageHistory.getMessages();
 
-    // --- 新しい振り返り兼サマリーノート生成処理 ---
+    console.log(`[ChatSessionManager][${this.managerInstanceId}] Initiating reset. SkipReflection: ${skipSummaryAndReflection}, LogPath: '${previousLogPath}', MessagesCount: ${previousMessages.length}, Using ChatLogger ID: ${currentChatLoggerId}`);
+    if (previousMessages.length > 0) {
+        previousMessages.forEach((msg, index) => {
+            console.log(`[ChatSessionManager][${this.managerInstanceId}] PreviousMessage ${index}: Type=${msg._getType()}, Content='${String(msg.content).substring(0, 70)}...'`);
+        });
+    } else {
+        console.log(`[ChatSessionManager][${this.managerInstanceId}] No previous messages in history.`);
+    }
+
     if (!skipSummaryAndReflection && previousLogPath && previousMessages.length > 1) {
+        console.log(`[ChatSessionManager][${this.managerInstanceId}] Conditions met for reflection and summary generation. Proceeding...`);
         try {
             new Notice(`${previousLlmRoleName}が会話の振り返り(サマリー)を作成中です...`, 4000);
             const reflectionNoteFile = await this.reflectionTool.generateAndSaveReflection(
                 previousMessages,
                 previousLlmRoleName,
-                previousLogPath.split('/').pop() || "unknown-log.md" // FullLogファイル名を渡す
+                previousLogPath.split('/').pop() || "unknown-log.md"
             );
 
             if (reflectionNoteFile instanceof TFile) {
-                console.log(`[ChatSessionManager] 振り返り兼サマリーノート生成完了: ${reflectionNoteFile.path}`);
-                // new Notice(`振り返り兼サマリーノートが生成されました: ${reflectionNoteFile.basename}`); // ツール側で通知済み
-                
-                // FullLogのフロントマターを更新
+                console.log(`[ChatSessionManager][${this.managerInstanceId}] Reflection and summary note generated: ${reflectionNoteFile.path}`);
                 await this.chatLogger.updateLogFileFrontmatter(previousLogPath, {
                     title: reflectionNoteFile.basename.replace(/\.md$/, '').replace(/^SN-\d{12}-/, ''),
-                    summary_note: `[[${reflectionNoteFile.name}]]` // リンクを更新
+                    summary_note: `[[${reflectionNoteFile.name}]]`
                 });
-                // TagProfilerによる処理はreflectionTool内部で行われるようになったため、ここでの呼び出しは不要
             } else if (typeof reflectionNoteFile === 'string' && reflectionNoteFile.startsWith("エラー:")) {
-                new Notice(reflectionNoteFile); // エラーメッセージを通知
+                console.warn(`[ChatSessionManager][${this.managerInstanceId}] Reflection tool returned an error string: ${reflectionNoteFile}`);
+                new Notice(reflectionNoteFile);
             } else {
+                 console.warn(`[ChatSessionManager][${this.managerInstanceId}] Reflection note generation failed or did not return a TFile. Returned: ${reflectionNoteFile}`);
                  new Notice(`振り返り兼サマリーノートの生成に失敗しました。`);
             }
         } catch (error: any) {
-            console.error('[ChatSessionManager] 振り返り兼サマリーノート生成中にエラー:', error);
-            new Notice(`${previousLlmRoleName}による振り返り兼サマリーノートの作成に失敗しました。`);
+            console.error(`[ChatSessionManager][${this.managerInstanceId}] Error during reflection/summary note generation:`, error, error.stack);
+            new Notice(`${previousLlmRoleName}による振り返り兼サマリーノートの作成に失敗しました。詳細: ${error.message}`);
         }
-    } else if (skipSummaryAndReflection) {
-        console.log('[ChatSessionManager] 振り返り兼サマリーノートの生成はスキップされました。');
+    } else {
+        console.log(`[ChatSessionManager][${this.managerInstanceId}] Conditions NOT met for reflection and summary generation. Details:`);
+        if (skipSummaryAndReflection) {
+            console.log(" - Reason: Reflection was explicitly skipped (skipSummaryAndReflection is true).");
+        }
+        if (!previousLogPath) {
+            console.log(" - Reason: previousLogPath is null or empty.");
+        }
+        if (!(previousMessages.length > 1)) {
+            console.log(` - Reason: previousMessages.length is ${previousMessages.length}, which is not > 1.`);
+        }
+        if (previousLogPath && previousMessages.length <=1 && !skipSummaryAndReflection){
+             console.log(`[ChatSessionManager][${this.managerInstanceId}] Skipping reflection as conversation did not have enough exchanges or log path was missing.`);
+        }
     }
-    // --- 新しい振り返り兼サマリーノート生成処理 終了 ---
 
     this.chatLogger.resetLogFile();
     this.messageHistory = new ChatMessageHistory();
@@ -99,9 +134,9 @@ export class ChatSessionManager {
     this.uiManager.resetInputField();
     this.uiManager.scrollToBottom();
 
-    console.log('[ChatSessionManager] チャットがリセットされました。');
+    console.log(`[ChatSessionManager][${this.managerInstanceId}] Chat has been reset.`);
 
-    if (!skipSummaryAndReflection && previousMessages.length > 1) {
+    if (!skipSummaryAndReflection && previousMessages.length > 1 && previousLogPath) {
         new Notice('新しいチャットが開始されました。');
     }
   }
@@ -112,7 +147,7 @@ export class ChatSessionManager {
 
     if (!currentLogPath && messages.length <= 1) {
         new Notice('破棄するチャットログがありません。');
-        await this.resetChat(true); // サマリーと感想生成をスキップ
+        await this.resetChat(true);
         new Notice('現在のチャット（ログなし）が破棄され、新しいチャットが開始されました。');
         return;
     }
@@ -133,9 +168,9 @@ export class ChatSessionManager {
     if (currentLogPath) {
         await this.chatLogger.deleteLogFile(currentLogPath);
     } else {
-        console.log('[ChatSessionManager] 削除対象のログファイルパスが設定されていません。');
+        console.log(`[ChatSessionManager][${this.managerInstanceId}] No log file path set to delete.`);
     }
-    await this.resetChat(true); // サマリーと感想生成をスキップしてリセット
+    await this.resetChat(true);
     new Notice('現在のチャットが破棄され、新しいチャットが開始されました。');
   }
 

@@ -10,10 +10,13 @@ export class ChatLogger {
   private llmRoleName: string;
   private currentLogFilePath: string | null = null;
   private readonly logDir = 'FullLog'; // ログを保存するディレクトリ
+  private instanceId: string; // デバッグ用のインスタンスID
 
   constructor(app: App, llmRoleName: string) {
     this.app = app;
     this.llmRoleName = llmRoleName;
+    this.instanceId = Math.random().toString(36).substring(2, 8); // ランダムなIDを生成
+    console.log(`[ChatLogger][${this.instanceId}] New instance created. RoleName: ${llmRoleName}`);
   }
 
   /**
@@ -21,6 +24,7 @@ export class ChatLogger {
    * @returns {string | null} 現在のログファイルパス、または未設定の場合はnull。
    */
   public getLogFilePath(): string | null {
+    console.log(`[ChatLogger][${this.instanceId}] getLogFilePath called. Returning: ${this.currentLogFilePath}`);
     return this.currentLogFilePath;
   }
 
@@ -31,17 +35,24 @@ export class ChatLogger {
    * @returns {Promise<string | null>} 作成されたログファイルのパス、またはエラー時はnull。
    */
   public async setupLogFile(llmRoleName?: string): Promise<string | null> {
+    const originalRoleName = this.llmRoleName;
     if (llmRoleName) {
         this.llmRoleName = llmRoleName;
+        console.log(`[ChatLogger][${this.instanceId}] setupLogFile: llmRoleName updated from '${originalRoleName}' to '${this.llmRoleName}'`);
+    } else {
+        console.log(`[ChatLogger][${this.instanceId}] setupLogFile: llmRoleName not provided, using existing '${this.llmRoleName}'`);
     }
+
     try {
+      console.log(`[ChatLogger][${this.instanceId}] Attempting to set up log file in directory: ${this.logDir}`);
       const dirExists = await this.app.vault.adapter.exists(this.logDir);
       if (!dirExists) {
         await this.app.vault.createFolder(this.logDir);
-        console.log(`[ChatLogger] Created directory: ${this.logDir}`);
+        console.log(`[ChatLogger][${this.instanceId}] Created directory: ${this.logDir}`);
       }
       const timestamp = moment().format('YYYYMMDDHHmmss');
       const newLogFilePath = `${this.logDir}/${timestamp}.md`;
+      console.log(`[ChatLogger][${this.instanceId}] Proposed new log file path: ${newLogFilePath}`);
       const currentDate = moment().format('YYYY-MM-DD HH:mm:ss');
       const initialLogContent = `---
 title: undefined
@@ -60,16 +71,15 @@ participants:
       if (!logFileExists) {
         await this.app.vault.create(newLogFilePath, initialLogContent);
         this.currentLogFilePath = newLogFilePath;
-        console.log(`[ChatLogger] Created log file: ${this.currentLogFilePath}`);
+        console.log(`[ChatLogger][${this.instanceId}] Successfully created log file. currentLogFilePath set to: ${this.currentLogFilePath}`);
         return this.currentLogFilePath;
       } else {
-        // 予期せずファイルが既に存在する場合のフォールバック (通常はタイムスタンプでユニークになるはず)
-        console.warn(`[ChatLogger] Log file already exists, attempting to use a new timestamp: ${newLogFilePath}`);
+        console.warn(`[ChatLogger][${this.instanceId}] Log file already exists (should be rare with timestamp): ${newLogFilePath}. Attempting to use a new timestamp by retrying.`);
         this.currentLogFilePath = null; // 一旦クリア
         return this.setupLogFile(this.llmRoleName); // 再試行
       }
     } catch (error: any) {
-      console.error('[ChatLogger] Error setting up logging:', error.message);
+      console.error(`[ChatLogger][${this.instanceId}] Error setting up logging:`, error.message, error.stack);
       new Notice('チャットログファイルの作成または確認に失敗しました。');
       this.currentLogFilePath = null;
       return null;
@@ -83,7 +93,7 @@ participants:
    */
   public async appendLogEntry(entry: string): Promise<void> {
     if (!this.currentLogFilePath) {
-      console.warn('[ChatLogger] Log file path is not set. Cannot append entry.');
+      console.warn(`[ChatLogger][${this.instanceId}] appendLogEntry: Log file path is not set. Cannot append entry.`);
       return;
     }
     const file = this.app.vault.getFileByPath(this.currentLogFilePath);
@@ -91,10 +101,10 @@ participants:
       try {
         await this.app.vault.append(file, entry);
       } catch (error: any) {
-        console.error(`[ChatLogger] Error appending to log file ${this.currentLogFilePath}:`, error.message);
+        console.error(`[ChatLogger][${this.instanceId}] Error appending to log file ${this.currentLogFilePath}:`, error.message);
       }
     } else {
-      console.error(`[ChatLogger] Log file not found for appending: ${this.currentLogFilePath}`);
+      console.error(`[ChatLogger][${this.instanceId}] appendLogEntry: Log file not found for appending: ${this.currentLogFilePath}`);
     }
   }
 
@@ -102,8 +112,9 @@ participants:
    * 現在のログファイルパスをリセットします。
    */
   public resetLogFile(): void {
+    console.log(`[ChatLogger][${this.instanceId}] resetLogFile called. Current path '${this.currentLogFilePath}' will be set to null.`);
     this.currentLogFilePath = null;
-    console.log('[ChatLogger] Log file path has been reset.');
+    // console.log(`[ChatLogger][${this.instanceId}] Log file path has been reset.`); // このログはユーザー提供ログと重複するのでコメントアウト
   }
 
   /**
@@ -112,25 +123,28 @@ participants:
    * @returns {Promise<boolean>} 削除に成功した場合はtrue、それ以外はfalse。
    */
   public async deleteLogFile(filePath: string): Promise<boolean> {
+    console.log(`[ChatLogger][${this.instanceId}] Attempting to delete log file: ${filePath}`);
     const logFile = this.app.vault.getAbstractFileByPath(filePath);
     if (logFile instanceof TFile) {
       try {
         await this.app.vault.delete(logFile);
         new Notice(`チャットログファイル ${filePath} を削除しました。`);
-        console.log(`[ChatLogger] Deleted log file: ${filePath}`);
+        console.log(`[ChatLogger][${this.instanceId}] Successfully deleted log file: ${filePath}`);
         if (this.currentLogFilePath === filePath) {
+          console.log(`[ChatLogger][${this.instanceId}] Deleted file was current log file. Resetting currentLogFilePath.`);
           this.currentLogFilePath = null; // 削除したファイルが現在のログファイルならパスをクリア
         }
         return true;
       } catch (error: any) {
         new Notice(`チャットログファイル ${filePath} の削除に失敗しました。`);
-        console.error(`[ChatLogger] Error deleting log file ${filePath}:`, error.message);
+        console.error(`[ChatLogger][${this.instanceId}] Error deleting log file ${filePath}:`, error.message);
         return false;
       }
     } else {
       new Notice(`削除対象のチャットログファイル ${filePath} が見つかりませんでした。`);
-      console.warn(`[ChatLogger] Log file not found for deletion: ${filePath}`);
+      console.warn(`[ChatLogger][${this.instanceId}] Log file not found for deletion: ${filePath}`);
       if (this.currentLogFilePath === filePath) {
+        console.log(`[ChatLogger][${this.instanceId}] Non-existent file was current log file. Resetting currentLogFilePath.`);
         this.currentLogFilePath = null;
       }
       return false;
@@ -145,9 +159,10 @@ participants:
    */
   public async updateLogFileFrontmatter(filePath: string, updates: Record<string, any>): Promise<void> {
     if (!filePath) {
-        console.warn('[ChatLogger] Cannot update frontmatter, file path is null.');
+        console.warn(`[ChatLogger][${this.instanceId}] Cannot update frontmatter, file path is null.`);
         return;
     }
+    console.log(`[ChatLogger][${this.instanceId}] Attempting to update frontmatter for log file: ${filePath} with updates:`, updates);
     const logFile = this.app.vault.getAbstractFileByPath(filePath);
     if (logFile instanceof TFile) {
         try {
@@ -158,13 +173,13 @@ participants:
                     }
                 }
             });
-            console.log(`[ChatLogger] Updated frontmatter for log file: ${filePath}`);
+            console.log(`[ChatLogger][${this.instanceId}] Successfully updated frontmatter for log file: ${filePath}`);
         } catch (error: any) {
-            console.error(`[ChatLogger] Error updating frontmatter for ${filePath}:`, error.message);
+            console.error(`[ChatLogger][${this.instanceId}] Error updating frontmatter for ${filePath}:`, error.message);
             new Notice(`ログファイル (${filePath}) のフロントマター更新に失敗しました。`);
         }
     } else {
-        console.warn(`[ChatLogger] Could not find log file to update frontmatter: ${filePath}`);
+        console.warn(`[ChatLogger][${this.instanceId}] Could not find log file to update frontmatter: ${filePath}`);
     }
   }
 }
