@@ -5,11 +5,11 @@ import { GeminiPluginSettings, DEFAULT_SETTINGS } from './settings'; // DEFAULT_
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage } from "@langchain/core/messages";
 import {
-  TagScoreEntry,
+  // TagScoreEntry, // 元のコードでは未使用のためコメントアウト (必要に応じて解除)
   TagScores,
   TagProfilingNoteFrontmatter,
   ParsedLlmTpnData,
-  SummaryNoteFrontmatter
+  SummaryNoteFrontmatter // types.ts に SummaryNoteFrontmatter があることを想定
 } from './types';
 
 const TAG_PROFILING_NOTE_DIR = 'TagProfilingNote';
@@ -87,25 +87,22 @@ export class TagProfiler {
     await this.ensureDirectoryExists(TAG_PROFILING_NOTE_DIR);
     const tagScores = await this.loadTagScores();
 
-    // ノートの言語判定 (SummaryNoteと同様のロジックを使用)
     const noteLanguage = await this.getNoteLanguage(noteFrontmatter, summaryNoteContent);
     console.log(`[TagProfiler] Detected language for ${summaryNoteFile.name}: ${noteLanguage}`);
 
-    // LLMのロール名とキャラクター設定を取得
     const llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
     const characterSettings = this.settings.systemPrompt || DEFAULT_SETTINGS.systemPrompt;
 
-
-    const processingPromises = tags.map((tag: string) => // 型を明示
+    const processingPromises = tags.map((tag: string) =>
       this.updateTagProfileForTag(
-          tag,
-          summaryNoteFile,
-          summaryNoteContent,
-          noteFrontmatter,
-          tagScores,
-          noteLanguage,
-          llmRoleName, // ペルソナ名を渡す
-          characterSettings // キャラクター設定を渡す
+        tag,
+        summaryNoteFile,
+        summaryNoteContent,
+        noteFrontmatter,
+        tagScores,
+        noteLanguage,
+        llmRoleName,
+        characterSettings
       ).catch(err => {
           console.error(`[TagProfiler] Error processing tag "${tag}" for ${summaryNoteFile.name}:`, err);
         })
@@ -168,16 +165,99 @@ export class TagProfiler {
     return 'English';
   }
 
+  /**
+   * ファイル名文字列から日付を抽出します。
+   * @param fileName ファイル名 (拡張子の有無は問わない)
+   * @returns 抽出されたDateオブジェクト、または抽出できなかった場合はnull
+   */
+  private extractDateFromFilenameString(fileName: string): Date | null {
+    if (!fileName) return null;
+
+    // パターン1: ファイル名が "SN-YYYYMMDDHHMM..." または "Reflection-...-YYYYMMDDHHMM..." 形式
+    // 例: "SN-202301011200-MyNote", "Reflection-HogeFuga-202301011200-Detail"
+    // YYYYMMDDHHMM の部分を抽出
+    let match = fileName.match(/^(?:SN-|Reflection-(?:[^-]+)-)(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/);
+    if (!match) { // SN-YYYYMMDDHHMM- のようなシンプルな形式も考慮
+        match = fileName.match(/^SN-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/);
+    }
+    if (match) {
+        const [, yearStr, monthStr, dayStr, hourStr, minuteStr] = match;
+        const year = parseInt(yearStr);
+        const month = parseInt(monthStr) - 1; // JavaScriptの月は0から始まる
+        const day = parseInt(dayStr);
+        const hour = parseInt(hourStr);
+        const minute = parseInt(minuteStr);
+        if (this.isValidDate(year, month, day, hour, minute)) {
+            return new Date(year, month, day, hour, minute);
+        }
+    }
+
+    // パターン2: "YYYY-MM-DD" または "YYYY_MM_DD" 形式 (ファイル名内)
+    match = fileName.match(/(?:\D|^)(\d{4})[-_](\d{2})[-_](\d{2})(?:\D|$)/);
+    if (match) {
+        const year = parseInt(match[1]);
+        const month = parseInt(match[2]) - 1;
+        const day = parseInt(match[3]);
+        if (this.isValidDate(year, month, day)) {
+            return new Date(year, month, day);
+        }
+    }
+    
+    // パターン3: "YYYYMMDD" 形式 (ファイル名内、8桁の数字)
+    // 前後に数字でない文字があるか、文字列の先頭/末尾であることを期待して誤検出を減らす
+    match = fileName.match(/(?:\D|^)(\d{4})(\d{2})(\d{2})(?:\D|$)/);
+    if (match) {
+        const year = parseInt(match[1]);
+        const month = parseInt(match[2]) - 1;
+        const day = parseInt(match[3]);
+        if (this.isValidDate(year, month, day)) {
+            return new Date(year, month, day);
+        }
+    }
+
+    // パターン4: ファイル名に "YYYYMMDD" が含まれる一般的な形式 (上記パターンにマッチしなかった場合のフォールバック)
+    // より緩いマッチングだが、日付として妥当か確認
+    const generalMatch = fileName.match(/(\d{4})(\d{2})(\d{2})/);
+    if (generalMatch) {
+        const year = parseInt(generalMatch[1]);
+        const month = parseInt(generalMatch[2]) - 1;
+        const day = parseInt(generalMatch[3]);
+        if (year >= 1970 && year <= 2099 && this.isValidDate(year, month, day)) { // 年の範囲を少し限定
+            return new Date(year, month, day);
+        }
+    }
+    
+    return null;
+  }
+
+  /**
+   * 指定された年月日（およびオプションで時分）が有効な日付であるか検証します。
+   */
+  private isValidDate(year: number, month: number, day: number, hour: number = 0, minute: number = 0): boolean {
+    if (year < 1900 || year > 2100) return false; // 一般的な使用範囲
+    if (month < 0 || month > 11) return false;   // 月は0から11
+    if (day < 1 || day > 31) return false;       // 日は1から31
+    if (hour < 0 || hour > 23) return false;
+    if (minute < 0 || minute > 59) return false;
+
+    const testDate = new Date(year, month, day, hour, minute);
+    return testDate.getFullYear() === year &&
+           testDate.getMonth() === month &&
+           testDate.getDate() === day &&
+           testDate.getHours() === hour &&
+           testDate.getMinutes() === minute;
+  }
+
 
   private async updateTagProfileForTag(
     tagName: string,
-    sourceNoteFile: TFile, // SummaryNote または ReflectionNote
+    sourceNoteFile: TFile,
     sourceNoteContent: string,
-    sourceNoteFrontmatter: any,
+    sourceNoteFrontmatter: any, // SummaryNoteFrontmatter型を想定
     tagScores: TagScores,
     noteLanguage: string,
-    llmRoleName: string, // ペルソナ名
-    characterSettings: string // キャラクター設定
+    llmRoleName: string,
+    characterSettings: string
   ): Promise<void> {
     if (!this.chatModel) {
       console.error("[TagProfiler] chatModel is unexpectedly null in updateTagProfileForTag. Aborting tag processing for:", tagName);
@@ -205,7 +285,7 @@ export class TagProfiler {
         } else {
           console.warn(`[TagProfiler] Could not parse frontmatter from existing TPN: ${tpnPath}. Treating as new.`);
           tpnFrontmatter = this.createInitialTpnFrontmatter(tagName);
-          existingTpnContent = null;
+          existingTpnContent = null; // フロントマターが読めない場合は本文もクリアする方が安全か検討
           isNewTpn = true;
         }
       } catch (e) {
@@ -226,8 +306,8 @@ export class TagProfiler {
       existingTpnContent,
       tpnFrontmatter,
       noteLanguage,
-      llmRoleName, // ペルソナ名を渡す
-      characterSettings // キャラクター設定を渡す
+      llmRoleName,
+      characterSettings
     );
 
     let llmResponseText: string;
@@ -252,7 +332,7 @@ export class TagProfiler {
       parsedLlmData = JSON.parse(jsonStringToParse) as ParsedLlmTpnData;
       if (parsedLlmData.tag_name !== tagName) {
           console.warn(`[TagProfiler] LLM returned data for tag "${parsedLlmData.tag_name}" but expected "${tagName}". Using expected tag name.`);
-          parsedLlmData.tag_name = tagName;
+          parsedLlmData.tag_name = tagName; // LLMの応答が間違っていても強制的に合わせる
       }
       console.log(`[TagProfiler] Successfully parsed LLM response for tag "${tagName}".`);
     } catch (error: any) {
@@ -261,7 +341,8 @@ export class TagProfiler {
       return;
     }
 
-    tpnFrontmatter.tag_name = tagName;
+    // Update TPN Frontmatter
+    tpnFrontmatter.tag_name = tagName; // 念のため再設定
     tpnFrontmatter.aliases = parsedLlmData.aliases || [];
     tpnFrontmatter.updated_date = moment().format('YYYY-MM-DD HH:MM');
     tpnFrontmatter.key_themes = parsedLlmData.key_themes || [];
@@ -280,10 +361,11 @@ export class TagProfiler {
     } else {
       tpnFrontmatter.summary_notes = [newSourceNoteLink];
     }
-
+    
+    // Update Tag Scores
     if (!tagScores[tagName]) {
       tagScores[tagName] = {
-        base_importance: 50,
+        base_importance: 50, // Default initial importance
         last_mentioned_in: newSourceNoteLink,
         mention_frequency: 1,
       };
@@ -299,25 +381,46 @@ export class TagProfiler {
       console.log(`[TagProfiler] LLM suggested new base_importance for "${tagName}": ${parsedLlmData.new_base_importance}`);
     }
     
-    tpnFrontmatter.last_mentioned_in = tagScores[tagName].last_mentioned_in;
-    tpnFrontmatter.mention_frequency = tagScores[tagName].mention_frequency;
+    tpnFrontmatter.last_mentioned_in = tagScores[tagName].last_mentioned_in; // TPNにも最終言及ノートを記録
+    tpnFrontmatter.mention_frequency = tagScores[tagName].mention_frequency; // TPNにも言及頻度を記録
 
-    let tpnBodyContent = `# タグプロファイル: {{tag_name}}\n\n`;
+
+    // Build TPN Body Content
+    let tpnBodyContent = `# タグプロファイル: {{tag_name}}\n\n`; // tagNameは後で置換
     tpnBodyContent += `## 概要\n\n${parsedLlmData.body_overview || (noteLanguage === 'Japanese' ? '概要はLLMによって提供されていません。' : 'Overview not provided by LLM.')}\n\n`;
+    
     tpnBodyContent += `## これまでの主な文脈\n\n`;
     if (parsedLlmData.body_contexts && parsedLlmData.body_contexts.length > 0) {
         parsedLlmData.body_contexts.forEach(ctx => {
-            const datePartMatch = ctx.summary_note_link.match(/(?:SN-|Reflection-.*?)-(\d{8})\d{4,6}(?:-\w*)?/); // SummaryNoteとReflectionNoteのファイル名パターンに対応
-            const displayDate = datePartMatch && datePartMatch[1] 
-                ? moment(datePartMatch[1], "YYYYMMDD").format("YYYY/MM/DD") 
+            // ctx.summary_note_link は "[[ファイル名.md]]" や "[[ファイル名]]" の形式を想定
+            const linkContent = ctx.summary_note_link.replace(/^\[\[/, '').replace(/\]\]$/, '');
+            // .md拡張子を除去 (あれば)
+            const baseFileName = linkContent.endsWith('.md') ? linkContent.slice(0, -3) : linkContent;
+
+            const extractedDate = this.extractDateFromFilenameString(baseFileName);
+            const displayDate = extractedDate
+                ? moment(extractedDate).format("YYYY/MM/DD")
                 : (noteLanguage === 'Japanese' ? '日付不明' : 'Unknown Date');
             tpnBodyContent += `- **${displayDate} ${ctx.summary_note_link}**: ${ctx.context_summary}\n`;
         });
     } else {
-        const fallbackDate = moment(sourceNoteFrontmatter.date, "YYYY-MM-DD HH:mm:ss").format("YYYY/MM/DD"); // sourceNoteFrontmatter.date を使用
-        tpnBodyContent += `- **${fallbackDate} [[${sourceNoteFile.name}]]**: ${sourceNoteFrontmatter.title || (noteLanguage === 'Japanese' ? 'このノートの文脈' : 'Context from this note')}\n`;
+        // フォールバック: 現在のsourceNoteFileから日付を試みる
+        const extractedDate = this.extractDateFromFilenameString(sourceNoteFile.basename); // .basenameで拡張子なしファイル名
+        let fallbackDisplayDate = noteLanguage === 'Japanese' ? '日付不明' : 'Unknown Date';
+
+        if (extractedDate) {
+            fallbackDisplayDate = moment(extractedDate).format("YYYY/MM/DD");
+        } else if (sourceNoteFrontmatter.date) { // フロントマターの日付を次に試す
+            const frontmatterDate = moment(sourceNoteFrontmatter.date, "YYYY-MM-DD HH:mm:ss", true); // 厳密なパース
+            if (frontmatterDate.isValid()) {
+                fallbackDisplayDate = frontmatterDate.format("YYYY/MM/DD");
+            }
+        }
+        // sourceNoteFile.name は [[ ]] で囲むと Obsidian リンクになる
+        tpnBodyContent += `- **${fallbackDisplayDate} [[${sourceNoteFile.name}]]**: ${sourceNoteFrontmatter.title || (noteLanguage === 'Japanese' ? 'このノートの文脈' : 'Context from this note')}\n`;
     }
     tpnBodyContent += `\n`;
+
     tpnBodyContent += `## ユーザーの意見・反応\n\n`;
     if (parsedLlmData.body_user_opinions && parsedLlmData.body_user_opinions.length > 0) {
         parsedLlmData.body_user_opinions.forEach(op => {
@@ -327,7 +430,10 @@ export class TagProfiler {
         tpnBodyContent += `- **[[${sourceNoteFile.name}]]**: ${noteLanguage === 'Japanese' ? 'このノートでのユーザーの意見・反応。' : "User's opinion/reaction in this note."}\n`;
     }
     tpnBodyContent += `\n`;
+
     tpnBodyContent += `## その他メモ\n\n${parsedLlmData.body_other_notes || (noteLanguage === 'Japanese' ? '特記事項なし。' : 'No additional notes.')}\n`;
+    
+    // tagName プレースホルダーを実際のタグ名で置換
     tpnBodyContent = tpnBodyContent.replace(/{{tag_name}}/g, tagName);
 
     const finalTpnContent = `---\n${stringifyYaml(tpnFrontmatter)}---\n\n${tpnBodyContent}`;
@@ -355,40 +461,49 @@ export class TagProfiler {
       updated_date: now,
       aliases: [],
       key_themes: [],
-      user_sentiment: { overall: 'Neutral', details: [] },
+      user_sentiment: { overall: 'Neutral', details: [] }, // 初期値はNeutralまたは言語に応じた表現
       master_significance: '',
       related_tags: [],
       summary_notes: [],
+      // last_mentioned_in と mention_frequency は TPN 生成時に tagScores から設定される
     };
   }
 
   private buildLlmPromptForTagProfiling(
     tagName: string,
-    currentSourceNoteFileName: string, // SummaryNote または ReflectionNote のファイル名
+    currentSourceNoteFileName: string,
     currentSourceNoteContent: string,
     existingTpnContent: string | null,
     currentTpnFrontmatter: TagProfilingNoteFrontmatter,
     noteLanguage: string,
-    llmRoleName: string, // ペルソナ名
-    characterSettings: string // キャラクター設定
+    llmRoleName: string,
+    characterSettings: string
   ): string {
     const today = moment().format('YYYY-MM-DD HH:MM');
     let existingContextsString = "[]";
     let existingOpinionsString = "[]";
 
     if (existingTpnContent) {
+        // 既存TPNから本文のセクションをパースするロジック (元のコードを流用)
         const contextSectionMatch = existingTpnContent.match(/## これまでの主な文脈\s*([\s\S]*?)(?=\n## ユーザーの意見・反応|\n## その他メモ|$)/);
         if (contextSectionMatch && contextSectionMatch[1]) {
             const contextEntries = [];
             const contextLines = contextSectionMatch[1].trim().split('\n');
             for (const line of contextLines) {
-                const entryMatch = line.match(/- \*\*(?:.+?\s+)?(\[\[(?:SN-|Reflection-).*?\.md\]\])\*\*: (.*)/); // SN- と Reflection- の両方に対応
+                // 正規表現は日付部分を含まない形に変更 (日付はLLMではなくコード側で付与するため)
+                const entryMatch = line.match(/- \*\*(?:.*?YY\s+)?(\[\[(?:SN-|Reflection-).*?\.md\]\])\*\*: (.*)/);
                 if (entryMatch) {
                     contextEntries.push({ summary_note_link: entryMatch[1], context_summary: entryMatch[2].trim() });
+                } else {
+                    // 日付がない古い形式も考慮 (例: - [[Note.md]]: Context)
+                    const simpleEntryMatch = line.match(/- (\S*\[\[.*?\]\]\S*): (.*)/);
+                    if (simpleEntryMatch) {
+                         contextEntries.push({ summary_note_link: simpleEntryMatch[1], context_summary: simpleEntryMatch[2].trim() });
+                    }
                 }
             }
             if (contextEntries.length > 0) {
-              existingContextsString = JSON.stringify(contextEntries, null, 2);
+                existingContextsString = JSON.stringify(contextEntries, null, 2);
             }
         }
         const opinionSectionMatch = existingTpnContent.match(/## ユーザーの意見・反応\s*([\s\S]*?)(?=\n## その他メモ|$)/);
@@ -396,18 +511,24 @@ export class TagProfiler {
             const opinionEntries = [];
             const opinionLines = opinionSectionMatch[1].trim().split('\n');
             for (const line of opinionLines) {
-                const entryMatch = line.match(/- \*\*(\[\[(?:SN-|Reflection-).*?\.md\]\])\*\*: (.*)/); // SN- と Reflection- の両方に対応
+                const entryMatch = line.match(/- \*\*(\[\[(?:SN-|Reflection-).*?\.md\]\])\*\*: (.*)/);
                  if (entryMatch) {
                     opinionEntries.push({ summary_note_link: entryMatch[1], user_opinion: entryMatch[2].trim() });
+                } else {
+                    const simpleEntryMatch = line.match(/- (\S*\[\[.*?\]\]\S*): (.*)/);
+                    if (simpleEntryMatch) {
+                         opinionEntries.push({ summary_note_link: simpleEntryMatch[1], user_opinion: simpleEntryMatch[2].trim() });
+                    }
                 }
             }
-             if (opinionEntries.length > 0) {
+            if (opinionEntries.length > 0) {
                 existingOpinionsString = JSON.stringify(opinionEntries, null, 2);
             }
         }
     }
 
-    // プロンプトを更新してキャラクター設定を反映させる
+    // プロンプトは元のものをほぼそのまま使用
+    // LLMには日付の生成を期待せず、あくまで文脈や意見のテキスト部分の生成に注力させる
     const prompt = `
 あなたは、以下のキャラクター設定を持つ ${llmRoleName} です。
 このキャラクター設定を完全に理解し、そのペルソナとして振る舞ってください。
@@ -459,6 +580,7 @@ TPNの全てのテキスト内容は ${noteLanguage} で記述してください
 **出力JSON形式:**
 
 JSONオブジェクトは以下の構造に厳密に従ってください。全てのテキスト内容は ${noteLanguage} で、あなたのキャラクターの口調や視点を反映してください。
+**重要:** "body_contexts" と "body_user_opinions" の中の "summary_note_link" は、Obsidianのリンク形式（例: \`[[ノート名.md]]\` または \`[[ノート名]]\`）で記述してください。日付の情報は含めないでください。日付はシステム側で付与します。
 
 \`\`\`json
 {
@@ -487,7 +609,7 @@ JSONオブジェクトは以下の構造に厳密に従ってください。全�
     // { "summary_note_link": "[[OlderNote-1.md]]", "user_opinion": "<古いノート1からのユーザーの意見、既存TPNから保持>" }
   ],
   "body_other_notes": "<あなたのキャラクターの視点から、このタグに関するその他の関連メモ、観察、未解決の疑問点など。既存のメモを更新し、新しい洞察を統合>",
-  "new_base_importance": "<あなたのキャラクターが、このタグのユーザーにとっての現在の重要性を0から100の整数でどう評価するか。言及頻度、ユーザーの感情、総合的な意義を考慮。もし重要性が著しく変化したと判断すれば、この値を更新>"
+  "new_base_importance": "<あなたのキャラクターが、このタグのユーザーにとっての現在の重要性を0から100の整数でどう評価するか。言及頻度、ユーザーの感情、総合的な意義を考慮。もし重要性が著しく変化したと判断すれば、この値を更新。数値のみで。>"
 }
 \`\`\`
 
