@@ -1,14 +1,14 @@
 // main.ts
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, WorkspaceLeaf, PluginSettingTab, Setting } from 'obsidian'; // PluginSettingTab と Setting もインポート
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, WorkspaceLeaf, PluginSettingTab, Setting } from 'obsidian';
 import { GeminiPluginSettings, DEFAULT_SETTINGS, MemoriaSettingTab } from './src/settings';
 import { CHAT_VIEW_TYPE, ChatView } from './src/ui/chatWindow';
-import { LocationFetcher } from './src/locationFetcher'; // LocationFetcherをインポート
-// TagProfiler は ChatView 内部でインポートおよびインスタンス化されるため、ここでの直接インポートは不要です。
-// SummaryGenerator も同様です。
+import { LocationFetcher } from './src/locationFetcher';
+import { ToolManager } from './src/tools/toolManager'; // ToolManagerをインポート
 
 export default class ObsidianMemoria extends Plugin {
   settings: GeminiPluginSettings;
-  locationFetcher: LocationFetcher; // LocationFetcherのインスタンスを保持
+  locationFetcher: LocationFetcher;
+  toolManager: ToolManager; // ToolManagerのインスタンスを保持
 
   async onload() {
     console.log('Loading Obsidian Memoria Plugin');
@@ -17,17 +17,14 @@ export default class ObsidianMemoria extends Plugin {
 
     // LocationFetcherを初期化
     this.locationFetcher = new LocationFetcher(this);
+    // ToolManagerを初期化
+    this.toolManager = new ToolManager(this);
 
     // チャットビューを登録
-    // ChatView のコンストラクタにプラグインインスタンス (this) を渡すことで、
-    // ChatView は SummaryGenerator や TagProfiler を初期化し、
-    // それらのモジュールはプラグインの設定情報 (this.settings) にアクセスできます。
-    // また、LocationFetcherも渡せるようにする (ChatViewが直接使う場合)か、
-    // プラグインインスタンス経由でアクセスできるようにする。
-    // 今回はChatViewがLocationFetcherを直接持つように変更。
+    // ChatViewのコンストラクタにプラグインインスタンス (this) を渡す
     this.registerView(
       CHAT_VIEW_TYPE,
-      (leaf) => new ChatView(leaf, this) // ChatViewのコンストラクタでLocationFetcherを受け取るように変更が必要
+      (leaf) => new ChatView(leaf, this)
     );
 
     // リボンアイコンにチャットビューを開く機能を追加
@@ -48,13 +45,13 @@ export default class ObsidianMemoria extends Plugin {
       },
     });
 
-    // 設定タブ (LocationFetcherを渡す必要はない。SettingTabがpluginインスタンスを持つため)
+    // 設定タブ
     this.addSettingTab(new MemoriaSettingTab(this.app, this));
 
 
     // APIキー未設定の通知
     if (!this.settings.geminiApiKey) {
-      new Notice('Gemini APIキーが設定されていません。Obsidian Memoria プラグイン設定画面から設定してください。', 0); // 0で通知が消えないようにする
+      new Notice('Gemini APIキーが設定されていません。Obsidian Memoria プラグイン設定画面から設定してください。', 0);
     }
 
     console.log('Obsidian Memoria Plugin loaded successfully.');
@@ -62,6 +59,8 @@ export default class ObsidianMemoria extends Plugin {
 
   onunload() {
     console.log('Unloading Obsidian Memoria Plugin');
+    // ビューのデタッチなど、クリーンアップ処理があればここに追加
+    this.app.workspace.detachLeavesOfType(CHAT_VIEW_TYPE);
   }
 
   async loadSettings() {
@@ -70,10 +69,21 @@ export default class ObsidianMemoria extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
-    const chatViewLeaf = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)[0];
-    if (chatViewLeaf && chatViewLeaf.view instanceof ChatView) {
-        chatViewLeaf.view.onSettingsChanged();
+    // 設定変更を関連モジュールに通知
+    if (this.locationFetcher && typeof this.locationFetcher.onSettingsChanged === 'function') {
+      this.locationFetcher.onSettingsChanged(this.settings);
     }
+    if (this.toolManager && typeof this.toolManager.onSettingsChanged === 'function') {
+      this.toolManager.onSettingsChanged(); // ToolManagerにも設定変更を通知
+    }
+
+    // アクティブなChatViewがあれば、そちらにも設定変更を通知
+    const leaves = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
+    leaves.forEach(leaf => {
+      if (leaf.view instanceof ChatView) {
+        leaf.view.onSettingsChanged();
+      }
+    });
   }
 
   async activateView(viewType: string) {
@@ -84,7 +94,11 @@ export default class ObsidianMemoria extends Plugin {
     if (leaves.length > 0) {
       leaf = leaves[0];
     } else {
-      leaf = workspace.getRightLeaf(false);
+      // 既存のリーフがない場合は、新しいリーフを右側に作成
+      leaf = workspace.getRightLeaf(false); // falseで既存の右リーフがなければnullを返す
+      if (!leaf) { // 右リーフがない、またはメインのワークスペースしかない場合
+        leaf = workspace.getLeaf(true); // 新しいリーフを分割して作成
+      }
       if (leaf) {
         await leaf.setViewState({
           type: viewType,
@@ -94,7 +108,7 @@ export default class ObsidianMemoria extends Plugin {
     }
 
     if (leaf) {
-      workspace.revealLeaf(leaf);
+      workspace.revealLeaf(leaf); // ビューを表示状態にする
     } else {
         console.error(`Failed to activate or create leaf for view type: ${viewType}`);
         new Notice(`チャットウィンドウを開けませんでした。`);

@@ -233,7 +233,7 @@ export class TagProfiler {
   /**
    * 指定された年月日（およびオプションで時分）が有効な日付であるか検証します。
    */
-  private isValidDate(year: number, month: number, day: number, hour: number = 0, minute: number = 0): boolean {
+  private isValidDate(year: number, month: number, day: number, hour = 0, minute = 0): boolean {
     if (year < 1900 || year > 2100) return false; // 一般的な使用範囲
     if (month < 0 || month > 11) return false;   // 月は0から11
     if (day < 1 || day > 31) return false;       // 日は1から31

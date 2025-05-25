@@ -14,6 +14,7 @@ export interface GeminiPluginSettings {
   maxTagsToRetrieve: number;
   showLocationInChat: boolean;
   showWeatherInChat: boolean;
+  todoFileName: string; // TODOリストのファイル名
   prompts?: {
     keywordExtractionPrompt?: string;
     contextEvaluationPromptBase?: string;
@@ -31,6 +32,7 @@ export const DEFAULT_SETTINGS: GeminiPluginSettings = {
   maxTagsToRetrieve: 5,
   showLocationInChat: false,
   showWeatherInChat: false,
+  todoFileName: 'TODOs.md', // デフォルトのTODOファイル名
   prompts: {
     keywordExtractionPrompt: `ユーザーの現在のメッセージは「{userPrompt}」です。このメッセージはLLMキャラクター「{llmRoleName}」に向けられています。\n\nこのメッセージの意図を理解する上で中心となる重要なキーワードやエンティティ（例: 人物名、プロジェクト名、特定の話題）を最大5つまで抽出してください。\nそして、抽出した各キーワードに対して、今回のメッセージ内での相対的な重要度を0から100の範囲でスコアリングしてください。\n\n応答は以下のJSON形式の配列で、キーワード(keyword)とそのスコア(score)を含めてください。\n例:\n[\n  { "keyword": "プロジェクトA", "score": 90 },\n  { "keyword": "締め切り", "score": 75 },\n  { "keyword": "山田さん", "score": 80 }\n]\n\nもし適切なキーワードが見つからない場合は、空の配列 [] を返してください。\nJSONオブジェクトのみを返し、他のテキストは含めないでください。`,
     contextEvaluationPromptBase: `あなたはユーザー「{llmRoleName}」の記憶と思考を補助するAIです。\nユーザーの現在の質問は「{userPrompt}」です。\n現在までに以下の参考情報が集まっています。\n---\n{currentContextForEval}\n---\nあなたのタスクは、これらの情報がユーザーの現在の質問に適切に応答するために十分かどうかを評価することです。\n応答は必ず以下のJSON形式で出力してください。\n\`\`\`json\n{\n  "sufficient_for_response": <true または false>,\n  "reasoning": "<判断理由を簡潔に記述>",\n  "next_summary_notes_to_fetch": ["<もし 'sufficient_for_response' が false で、次に参照すべきサマリーノートがあれば、そのファイル名を複数指定 (例: 'SN-YYYYMMDDHHMM-Topic1', 'SN-YYYYMMDDHHMM-Topic2')。不要なら空配列 []>"],\n  "requires_full_log_for_summary_note": "<もし 'sufficient_for_response' が false で、特定のサマリーノートのフルログが必要な場合、そのサマリーノートのファイル名を指定 (例: 'SN-YYYYMMDDHHMM-TopicX')。不要なら null>"\n}\n\`\`\`\n考慮事項:\n- 現在の評価レベルは「{currentLevel}」です。\n- {currentLevelSpecificConsideration}\n- ユーザーの質問の意図を深く理解し、本当に必要な情報だけを要求するようにしてください。\n- \`next_summary_notes_to_fetch\` と \`requires_full_log_for_summary_note\` は、\`sufficient_for_response\` が false の場合にのみ意味を持ちます。\n- \`requires_full_log_for_summary_note\` は、既にSNを読み込んだ後、そのSNに紐づくFLが必要な場合に指定します。\nJSONオブジェクトのみを返し、他のテキストは含めないでください。`,
@@ -74,16 +76,16 @@ export class MemoriaSettingTab extends PluginSettingTab {
         })
         .inputEl.setAttribute('type', 'password'));
 
-    containerEl.createEl('h3', { text: 'LLM Persona Settings' }); // セクション名を変更
+    containerEl.createEl('h3', { text: 'LLM Persona Settings' });
 
     new Setting(containerEl)
-      .setName('LLM Role Name (Persona Name)') // 新しい設定項目
+      .setName('LLM Role Name (Persona Name)')
       .setDesc('Set the name of your LLM persona. This name will be used in logs, summaries, and reflections.')
       .addText(text => text
         .setPlaceholder('例: Assistant, Memoria, Bob')
         .setValue(this.plugin.settings.llmRoleName)
         .onChange(async (value) => {
-          this.plugin.settings.llmRoleName = value.trim() || DEFAULT_SETTINGS.llmRoleName; // 空の場合はデフォルト値
+          this.plugin.settings.llmRoleName = value.trim() || DEFAULT_SETTINGS.llmRoleName;
           await this.plugin.saveSettings();
         }));
 
@@ -201,6 +203,19 @@ export class MemoriaSettingTab extends PluginSettingTab {
                     console.error('[MemoriaSettingTab] LocationFetcher instance is not available on plugin object.');
                 }
             }));
+
+    containerEl.createEl('h3', { text: 'Tool Settings' });
+
+    new Setting(containerEl)
+      .setName('TODO List File Name')
+      .setDesc('The name of the markdown file to store your TODO list.')
+      .addText(text => text
+        .setPlaceholder('E.g., TODOs.md, MyTasks.md')
+        .setValue(this.plugin.settings.todoFileName)
+        .onChange(async (value) => {
+          this.plugin.settings.todoFileName = value || DEFAULT_SETTINGS.todoFileName;
+          await this.plugin.saveSettings();
+        }));
 
 
     containerEl.createEl('h3', { text: 'Advanced Prompt Settings (JSON format expected if modified)' });

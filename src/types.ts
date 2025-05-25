@@ -190,3 +190,20 @@ export interface CurrentContextualInfo {
     weatherService?: string;
   }
 }
+
+/**
+ * TODOアイテムの型定義
+ */
+export interface TodoItem {
+  task: string;
+  completed: boolean;
+  dueDate?: string;
+  priority?: string;
+  raw: string; // 元のMarkdown行
+}
+
+// TodoToolInput と TodoActionParams は Zod スキーマから型推論されるため、
+// src/tools/todoTool.ts 内で z.infer を使って定義されます。
+// もし他の場所でこれらの型が必要な場合は、todoTool.ts からエクスポートしてインポートします。
+// 例: export type TodoToolInput = z.infer<typeof TodoToolInputSchema>; in todoTool.ts
+//     import { TodoToolInput } from './tools/todoTool'; else where

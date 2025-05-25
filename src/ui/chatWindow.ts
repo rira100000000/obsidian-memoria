@@ -2,16 +2,25 @@
 import { ItemView, WorkspaceLeaf, Notice, moment, TFile, App } from 'obsidian';
 import ObsidianMemoria from '../../main';
 import { GeminiPluginSettings, DEFAULT_SETTINGS } from '../settings';
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
-import { RunnableWithMessageHistory } from "@langchain/core/runnables";
+import {
+  ChatGoogleGenerativeAI,
+  GoogleGenerativeAIChatCallOptions,
+} from "@langchain/google-genai";
+import {
+  HumanMessage,
+  AIMessage,
+  SystemMessage,
+  BaseMessage,
+  ToolMessage,
+  AIMessageChunk,
+} from "@langchain/core/messages";
 import {
   ChatPromptTemplate,
   MessagesPlaceholder,
   SystemMessagePromptTemplate,
   HumanMessagePromptTemplate
 } from "@langchain/core/prompts";
-// import { SummaryGenerator } from '../summaryGenerator'; // SummaryGenerator は不要になったためコメントアウト
+
 import { TagProfiler } from '../tagProfiler';
 import { ContextRetriever } from '../contextRetriever';
 import { LocationFetcher } from '../locationFetcher';
@@ -20,6 +29,9 @@ import { ChatUIManager } from './chatUIManager';
 import { ChatSessionManager } from '../chatSessionManager';
 import { PromptFormatter } from '../promptFormatter';
 import { ChatContextBuilder, LlmContextInput } from '../chatContextBuilder';
+import { ToolManager } from '../tools/toolManager';
+import { StructuredTool } from '@langchain/core/tools';
+import { z } from 'zod';
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
@@ -30,17 +42,16 @@ export class ChatView extends ItemView {
   private chatSessionManager!: ChatSessionManager;
   private promptFormatter!: PromptFormatter;
   private chatContextBuilder!: ChatContextBuilder;
+  private toolManager!: ToolManager;
 
   private chatModel: ChatGoogleGenerativeAI | null = null;
-  private chainWithHistory: RunnableWithMessageHistory<Record<string, any>, BaseMessage> | null = null;
   private contextRetriever: ContextRetriever;
   private locationFetcher: LocationFetcher;
-  private chatLogger!: ChatLogger; // ChatLogger のインスタンスを保持
+  private chatLogger!: ChatLogger;
 
   private llmRoleName: string;
-  // private summaryGenerator: SummaryGenerator; // 不要になったためコメントアウト
   private tagProfiler: TagProfiler;
-  private viewInstanceId: string; // デバッグ用のビューインスタンスID
+  private viewInstanceId: string;
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianMemoria) {
     super(leaf);
@@ -50,33 +61,25 @@ export class ChatView extends ItemView {
     this.viewInstanceId = Math.random().toString(36).substring(2, 8);
     console.log(`[ChatView][${this.viewInstanceId}] Constructor called. Initial RoleName: ${this.llmRoleName}`);
 
-    // ChatLogger の初期化は onOpen で行う
-    // this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
-
-    // this.summaryGenerator = new SummaryGenerator(this.plugin); // 不要になったためコメントアウト
     this.tagProfiler = new TagProfiler(this.plugin);
     this.contextRetriever = new ContextRetriever(this.plugin);
-    this.locationFetcher = new LocationFetcher(this.plugin);
+    this.locationFetcher = plugin.locationFetcher;
     this.promptFormatter = new PromptFormatter(this.settings);
     this.chatContextBuilder = new ChatContextBuilder(
         this.contextRetriever,
         this.locationFetcher,
         this.settings
     );
+    this.toolManager = plugin.toolManager;
   }
 
-  private initializeChatModel() {
+  private async initializeChatModel() {
     console.log(`[ChatView][${this.viewInstanceId}] initializeChatModel called.`);
     this.settings = this.plugin.settings;
     this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
 
     this.promptFormatter.updateSettings(this.settings);
     this.chatContextBuilder.onSettingsChanged(this.settings);
-    
-    // ChatLogger は onSettingsChanged または onOpen でインスタンスが管理される
-    // ChatSessionManager も同様
-
-    const systemPromptTemplateString = this.promptFormatter.getSystemPromptTemplate();
 
     if (this.settings.geminiApiKey && this.settings.geminiModel) {
       try {
@@ -84,42 +87,15 @@ export class ChatView extends ItemView {
           apiKey: this.settings.geminiApiKey,
           model: this.settings.geminiModel,
         });
-
-        const systemMessagePrompt = SystemMessagePromptTemplate.fromTemplate(systemPromptTemplateString);
-        const humanMessagePrompt = HumanMessagePromptTemplate.fromTemplate("{input}");
-
-        const prompt = ChatPromptTemplate.fromMessages([
-          systemMessagePrompt,
-          new MessagesPlaceholder("history"),
-          humanMessagePrompt,
-        ]);
-
-        const chain = prompt.pipe(this.chatModel);
-        
-        // getMessageHistory が ChatSessionManager のインスタンスメソッドを参照するようにする
-        // ChatSessionManager が初期化された後に chainWithHistory を設定する必要がある
-        if (this.chatSessionManager) {
-            this.chainWithHistory = new RunnableWithMessageHistory({
-                runnable: chain,
-                getMessageHistory: (_sessionId) => this.chatSessionManager.messageHistory,
-                inputMessagesKey: "input",
-                historyMessagesKey: "history",
-            });
-            console.log(`[ChatView][${this.viewInstanceId}] Chat model and chainWithHistory initialized. LLM Role: ${this.llmRoleName}`);
-        } else {
-            console.warn(`[ChatView][${this.viewInstanceId}] chatSessionManager not yet initialized. chainWithHistory will be set up later.`);
-            // chainWithHistory は onOpen の最後や sendMessage の直前で再確認・再設定が必要になる場合がある
-        }
+        console.log(`[ChatView][${this.viewInstanceId}] Chat model initialized. LLM Role: ${this.llmRoleName}`);
       } catch (error: any) {
-        console.error(`[ChatView][${this.viewInstanceId}] Failed to initialize ChatGoogleGenerativeAI model or chain:`, error.message);
-        new Notice('Geminiモデルまたはチャットチェーンの初期化に失敗しました。');
+        console.error(`[ChatView][${this.viewInstanceId}] Failed to initialize ChatGoogleGenerativeAI model:`, error.message);
+        new Notice('Geminiモデルの初期化に失敗しました。');
         this.chatModel = null;
-        this.chainWithHistory = null;
       }
     } else {
       console.log(`[ChatView][${this.viewInstanceId}] API key or model name not set. Chat model not initialized.`);
       this.chatModel = null;
-      this.chainWithHistory = null;
     }
   }
 
@@ -130,31 +106,17 @@ export class ChatView extends ItemView {
     this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
     console.log(`[ChatView][${this.viewInstanceId}] RoleName changed from '${oldRoleName}' to '${this.llmRoleName}'`);
 
-    // ChatLogger を新しい設定 (特に llmRoleName) で再初期化
-    // 以前の chatLogger インスタンスがあった場合、その ID もログに出力
-    const oldChatLoggerId = this.chatLogger ? (this.chatLogger as any).instanceId : 'N/A';
-    this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
-    console.log(`[ChatView][${this.viewInstanceId}] ChatLogger re-initialized. Old ID: ${oldChatLoggerId}, New ID: ${(this.chatLogger as any).instanceId}`);
-
-    // initializeChatModel は ChatSessionManager ができてから呼ぶ方が安全
-    // ChatSessionManager も新しい ChatLogger を参照するように更新
+    if (this.chatLogger) this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
     if (this.chatSessionManager) {
         this.chatSessionManager.updateLlmRoleName(this.llmRoleName);
-        this.chatSessionManager.updateChatLogger(this.chatLogger);
-    } else {
-        console.warn(`[ChatView][${this.viewInstanceId}] onSettingsChanged: chatSessionManager not yet initialized. Updates will be applied upon its creation.`);
+        if (this.chatLogger) this.chatSessionManager.updateChatLogger(this.chatLogger);
     }
     
-    // initializeChatModel は chainWithHistory を再生成する可能性があり、
-    // chainWithHistory は chatSessionManager.messageHistory を参照するため、
-    // chatSessionManager が確実に存在し、更新された後に呼ぶのが望ましい。
-    this.initializeChatModel(); // LLMモデルとチェーンを再初期化 (ChatSessionManager の依存関係を考慮)
-
-
+    this.initializeChatModel();
     this.tagProfiler.onSettingsChanged();
     this.contextRetriever.onSettingsChanged();
-    this.locationFetcher.onSettingsChanged(this.settings);
     this.chatContextBuilder.onSettingsChanged(this.settings);
+    if (this.toolManager) this.toolManager.onSettingsChanged();
 
     this.updateTitle();
     console.log(`[ChatView][${this.viewInstanceId}] Settings changed, relevant modules re-initialized/updated.`);
@@ -168,18 +130,15 @@ export class ChatView extends ItemView {
     console.log(`[ChatView][${this.viewInstanceId}] onOpen called.`);
     this.settings = this.plugin.settings;
     this.llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
-    console.log(`[ChatView][${this.viewInstanceId}] RoleName set to: ${this.llmRoleName}`);
 
-    // ChatLogger の初期化 (コンストラクタから移動)
     this.chatLogger = new ChatLogger(this.app, this.llmRoleName);
-    console.log(`[ChatView][${this.viewInstanceId}] ChatLogger initialized in onOpen. ID: ${(this.chatLogger as any).instanceId}`);
+    this.toolManager = this.plugin.toolManager;
 
     this.promptFormatter.updateSettings(this.settings);
     this.chatContextBuilder.onSettingsChanged(this.settings);
-    this.locationFetcher.onSettingsChanged(this.settings);
     this.contextRetriever.onSettingsChanged();
     this.tagProfiler.onSettingsChanged();
-
+    this.toolManager.onSettingsChanged();
 
     this.uiManager = new ChatUIManager(
         this.containerEl.children[1] as HTMLElement,
@@ -187,26 +146,21 @@ export class ChatView extends ItemView {
         () => this.chatSessionManager.resetChat(false),
         () => this.chatSessionManager.confirmAndDiscardChat()
     );
-    console.log(`[ChatView][${this.viewInstanceId}] UIManager initialized.`);
 
     this.chatSessionManager = new ChatSessionManager(
         this.app,
         this.plugin,
         this.uiManager,
-        this.chatLogger, // ここで初期化済みの chatLogger を渡す
+        this.chatLogger,
         this.tagProfiler,
         this.llmRoleName
     );
-    console.log(`[ChatView][${this.viewInstanceId}] ChatSessionManager initialized, passing ChatLogger ID: ${(this.chatLogger as any).instanceId}`);
 
-    // ChatSessionManager が初期化された後に initializeChatModel を呼ぶ
-    this.initializeChatModel(); 
+    await this.initializeChatModel(); 
 
     this.uiManager.appendModelMessage(`チャットウィンドウへようこそ！ ${this.llmRoleName}がお話しします。\nShift+Enterでメッセージを送信します。`);
 
-    if (!this.chainWithHistory && this.settings.geminiApiKey && this.settings.geminiModel) {
-        // initializeChatModel で chainWithHistory が設定されなかった場合のフォールバックまたは警告
-        console.warn(`[ChatView][${this.viewInstanceId}] chainWithHistory is still null after onOpen initializations. This might indicate an issue if API key and model are set.`);
+    if (!this.chatModel) {
         new Notice('チャットモデルの接続に問題がある可能性があります。設定を確認してください。', 0);
     } else if (!this.settings.geminiApiKey || !this.settings.geminiModel) {
         new Notice('Geminiチャット機能が利用できません。設定（APIキー、モデル名）を確認してください。', 0);
@@ -216,79 +170,61 @@ export class ChatView extends ItemView {
 
   async onClose() {
     console.log(`[ChatView][${this.viewInstanceId}] onClose called.`);
-    // Clean up resources if needed
   }
 
   private updateTitle() {
     const newDisplayText = this.getDisplayText();
-    console.log(`[ChatView][${this.viewInstanceId}] updateTitle called. Current display text: ${newDisplayText}`);
+    console.log(`[ChatView][${this.viewInstanceId}] updateTitle called. New display text would be: ${newDisplayText}`);
   }
-
 
   async sendMessage() {
     console.log(`[ChatView][${this.viewInstanceId}] sendMessage called.`);
-    if (!this.uiManager || !this.chatSessionManager || !this.promptFormatter || !this.chatContextBuilder || !this.chatLogger) {
-        console.error(`[ChatView][${this.viewInstanceId}] sendMessage preconditions not met. UIManager: ${!!this.uiManager}, ChatSessionManager: ${!!this.chatSessionManager}, PromptFormatter: ${!!this.promptFormatter}, ChatContextBuilder: ${!!this.chatContextBuilder}, ChatLogger: ${!!this.chatLogger} (ID: ${this.chatLogger ? (this.chatLogger as any).instanceId : 'N/A'})`);
+    if (!this.chatModel || !this.uiManager || !this.chatSessionManager || !this.promptFormatter || !this.chatContextBuilder || !this.chatLogger || !this.toolManager) {
+        console.error(`[ChatView][${this.viewInstanceId}] sendMessage preconditions not met.`);
         new Notice("チャットの送信準備ができていません。");
         return;
     }
 
-    const rawMessageContent = this.uiManager.getInputText();
-    const trimmedMessageContent = rawMessageContent.trim();
-
-    if (!trimmedMessageContent) {
-      if (rawMessageContent.length > 0) new Notice("メッセージが空白です。送信は行いません。");
+    const userInputText = this.uiManager.getInputText().trim();
+    if (!userInputText) {
+      if (this.uiManager.getInputText().length > 0) new Notice("メッセージが空白です。送信は行いません。");
       this.uiManager.resetInputField();
       return;
     }
 
-    const messages = await this.chatSessionManager.getMessages();
-    const userMessageCount = messages.filter(msg => msg._getType() === "human").length;
-    const isFirstActualUserMessage = userMessageCount === 0;
-    console.log(`[ChatView][${this.viewInstanceId}] isFirstActualUserMessage: ${isFirstActualUserMessage}`);
-
-    // ログファイルパスの確認とセットアップ
-    let currentLogPath = this.chatLogger.getLogFilePath();
-    console.log(`[ChatView][${this.viewInstanceId}] Before setupLogFile check. Current log path from ChatLogger ID ${(this.chatLogger as any).instanceId}: ${currentLogPath}`);
-    if (!currentLogPath) {
-        console.log(`[ChatView][${this.viewInstanceId}] Log file path is null, calling setupLogFile with RoleName: ${this.llmRoleName}`);
-        await this.chatLogger.setupLogFile(this.llmRoleName);
-        currentLogPath = this.chatLogger.getLogFilePath(); // 再取得
-        console.log(`[ChatView][${this.viewInstanceId}] After setupLogFile. New log path: ${currentLogPath}`);
-        if (!currentLogPath) {
-            this.uiManager.appendModelMessage('エラー: ログファイルの作成に失敗したため、メッセージを送信できません。');
-            new Notice('ログファイルの作成に失敗しました。');
-            return;
-        }
-    }
-
-    this.uiManager.appendUserMessage(trimmedMessageContent);
-    await this.chatLogger.appendLogEntry(`**User**: ${trimmedMessageContent}\n`);
+    await this.chatSessionManager.addUserMessage(userInputText);
+    this.uiManager.appendUserMessage(userInputText);
+    await this.chatLogger.appendLogEntry(`**User**: ${userInputText}\n`);
     this.uiManager.resetInputField();
 
-    if (!this.chainWithHistory) {
-      console.warn(`[ChatView][${this.viewInstanceId}] chainWithHistory is null before sending message. Attempting re-initialization.`);
-      this.uiManager.appendModelMessage('エラー: チャットチェーンが初期化されていません。プラグイン設定を確認してください。');
-      new Notice('チャット機能が利用できません。設定を確認してください。');
-      this.initializeChatModel(); 
-      if(!this.chainWithHistory) {
-          console.error(`[ChatView][${this.viewInstanceId}] Re-initialization of chainWithHistory failed.`);
-          return;
-      }
-      console.log(`[ChatView][${this.viewInstanceId}] chainWithHistory re-initialized successfully.`);
-    }
+    // 初期ローディングメッセージ要素
+    const initialLoadingMessageEl = this.uiManager.appendMessage('応答を待っています...', 'loading');
+    // ストリーミングや最終応答を表示するためのUI要素を管理する変数
+    let currentMessageDisplayElement: HTMLElement | null = initialLoadingMessageEl;
 
-    const loadingMessageEl = this.uiManager.appendMessage('応答を待っています...', 'loading');
-
-    let llmContext: LlmContextInput;
     try {
-        llmContext = await this.chatContextBuilder.prepareContextForLlm(
-            trimmedMessageContent,
+        let currentMessages: BaseMessage[] = await this.chatSessionManager.getMessages();
+        const isFirstActualUserMessage = currentMessages.filter(msg => msg._getType() === "human").length === 1;
+
+        let currentLogPath = this.chatLogger.getLogFilePath();
+        if (!currentLogPath) {
+            await this.chatLogger.setupLogFile(this.llmRoleName);
+            currentLogPath = this.chatLogger.getLogFilePath();
+            if (!currentLogPath) {
+                this.uiManager.appendModelMessage('エラー: ログファイルの作成に失敗したため、メッセージを送信できません。');
+                new Notice('ログファイルの作成に失敗しました。');
+                if (currentMessageDisplayElement && currentMessageDisplayElement.parentNode) currentMessageDisplayElement.remove();
+                return;
+            }
+        }
+
+        const llmContext = await this.chatContextBuilder.prepareContextForLlm(
+            userInputText,
             this.llmRoleName,
-            await this.chatSessionManager.getMessages(),
+            currentMessages,
             isFirstActualUserMessage
         );
-        if (isFirstActualUserMessage) {
+         if (isFirstActualUserMessage) {
             if (this.settings.showLocationInChat && llmContext.current_location_string && !llmContext.current_location_string.includes("失敗") && !llmContext.current_location_string.includes("最初のメッセージでのみ")) {
                 new Notice(`現在地情報がLLMに渡されました。`, 3000);
             }
@@ -297,58 +233,196 @@ export class ChatView extends ItemView {
             }
         }
 
+        const systemPromptStr = this.promptFormatter.getSystemPromptTemplate()
+            .replace('{character_setting_prompt}', llmContext.character_setting_prompt)
+            .replace('{current_time}', llmContext.current_time)
+            .replace('{current_location_string}', llmContext.current_location_string)
+            .replace('{current_weather_string}', llmContext.current_weather_string)
+            .replace('{retrieved_context_string}', llmContext.retrieved_context_string)
+            .replace('{input}', userInputText);
+
+        const messagesForLlm: BaseMessage[] = [
+            new SystemMessage(systemPromptStr),
+            ...currentMessages
+        ];
+        
+        const toolsOption: StructuredTool<z.ZodObject<any, any, any, any>>[] = this.toolManager.getLangchainTools();
+        let aiResponse: AIMessage;
+        let combinedContentFromStream = "";
+        let firstChunkReceived = false;
+
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+            console.log(`[ChatView][${this.viewInstanceId}] Invoking LLM. Message count: ${messagesForLlm.length}. Tools provided: ${toolsOption.length}`);
+            
+            let accumulatedChunk: AIMessageChunk | null = null;
+            combinedContentFromStream = ""; 
+
+            // ストリーム開始前に、現在の表示要素を準備
+            if (currentMessageDisplayElement && currentMessageDisplayElement.parentNode && currentMessageDisplayElement.classList.contains('loading')) {
+                // 初回またはツール実行後のローディングメッセージなら、クリアして再利用
+                currentMessageDisplayElement.classList.remove('loading');
+                currentMessageDisplayElement.setText('');
+            } else if (!currentMessageDisplayElement || !currentMessageDisplayElement.parentNode) {
+                // 何らかの理由で表示要素がない場合は新規作成
+                currentMessageDisplayElement = this.uiManager.appendMessage('', 'model');
+            }
+            firstChunkReceived = false;
+
+            const stream = await this.chatModel.stream(messagesForLlm, { tools: toolsOption } as GoogleGenerativeAIChatCallOptions);
+            
+            for await (const chunk of stream) { 
+                if (!firstChunkReceived) {
+                    firstChunkReceived = true;
+                    // 最初のチャンク受信時に、もし '応答を待っています...' のような初期テキストが残っていればクリア
+                    if (currentMessageDisplayElement && currentMessageDisplayElement.textContent === '応答を待っています...') {
+                         currentMessageDisplayElement.setText('');
+                    }
+                }
+
+                const chunkContent = chunk.content;
+                if (typeof chunkContent === "string" && chunkContent.length > 0) {
+                    combinedContentFromStream += chunkContent; 
+                    if (currentMessageDisplayElement) { // currentMessageDisplayElement が null でないことを確認
+                        currentMessageDisplayElement.textContent += chunkContent; 
+                    }
+                    this.uiManager.scrollToBottom();
+                }
+
+                if (!accumulatedChunk) {
+                    accumulatedChunk = chunk;
+                } else {
+                    accumulatedChunk = accumulatedChunk.concat(chunk);
+                }
+            }
+
+            if (!accumulatedChunk && firstChunkReceived) {
+                 aiResponse = new AIMessage({content: combinedContentFromStream});
+            } else if (!accumulatedChunk && !firstChunkReceived ) {
+                 aiResponse = new AIMessage({content: ""}); 
+            } else if (accumulatedChunk) {
+                 aiResponse = new AIMessage(accumulatedChunk);
+            } else {
+                 aiResponse = new AIMessage({content: "LLMからの応答が予期せず空でした。"});
+            }
+
+            messagesForLlm.push(aiResponse);
+            
+            if (!aiResponse.tool_calls || aiResponse.tool_calls.length === 0) {
+                console.log(`[ChatView][${this.viewInstanceId}] No tool calls from LLM. Final response:`, aiResponse.content);
+                break; 
+            }
+
+            const currentToolCallsFromLlm = aiResponse.tool_calls;
+            console.log(`[ChatView][${this.viewInstanceId}] LLM requested tool calls:`, currentToolCallsFromLlm);
+            
+            // ツール実行前に、現在のメッセージ表示要素 (ストリーミング途中だったもの) を一旦削除
+            if (currentMessageDisplayElement && currentMessageDisplayElement.parentNode) {
+                currentMessageDisplayElement.remove();
+                currentMessageDisplayElement = null; 
+            }
+            const toolExecutionNoticeEl = this.uiManager.appendMessage('ツールを実行しています...', 'loading');
+
+            const toolMessages: ToolMessage[] = [];
+            for (const toolCall of currentToolCallsFromLlm) {
+                const toolName = toolCall.name;
+                const toolArgs = toolCall.args;
+                const toolCallId = toolCall.id;
+
+                if (!toolName || !toolCallId) {
+                    console.error("[ChatView] Invalid tool call structure from LLM:", toolCall);
+                    toolMessages.push(new ToolMessage({
+                        tool_call_id: toolCallId || `invalid_tool_call_${Date.now()}`,
+                        name: toolName || "unknown_tool",
+                        content: "Error: Invalid tool call structure received from LLM."
+                    }));
+                    continue;
+                }
+                
+                const toolToExecute = this.toolManager.getToolByName(toolName);
+                if (toolToExecute) {
+                    try {
+                        console.log(`[ChatView][${this.viewInstanceId}] Executing tool: ${toolName} with args:`, toolArgs);
+                        const result = await toolToExecute.invoke(toolArgs);
+                        toolMessages.push(new ToolMessage({
+                            tool_call_id: toolCallId,
+                            name: toolName,
+                            content: result 
+                        }));
+                        console.log(`[ChatView][${this.viewInstanceId}] Tool ${toolName} executed. Result:`, result);
+                        // ツール実行結果をUIに表示 (オプション)
+                        this.uiManager.appendModelMessage(`ツール「${toolName}」を実行しました。結果:\n${String(result).substring(0,150)}...`);
+
+                    } catch (toolError: any) {
+                        console.error(`[ChatView][${this.viewInstanceId}] Error executing tool ${toolName}:`, toolError);
+                        toolMessages.push(new ToolMessage({
+                            tool_call_id: toolCallId,
+                            name: toolName,
+                            content: `Error executing tool: ${toolError.message}`
+                        }));
+                    }
+                } else {
+                    console.warn(`[ChatView][${this.viewInstanceId}] Unknown tool called: ${toolName}`);
+                    toolMessages.push(new ToolMessage({
+                        tool_call_id: toolCallId,
+                        name: toolName,
+                        content: `Error: Unknown tool ${toolName}`
+                    }));
+                }
+            }
+            if (toolExecutionNoticeEl && toolExecutionNoticeEl.parentNode) toolExecutionNoticeEl.remove();
+            messagesForLlm.push(...toolMessages);
+            
+            // 次のLLM呼び出しのために、新しいローディングメッセージ要素を準備
+            currentMessageDisplayElement = this.uiManager.appendMessage('LLMの応答を待っています...', 'loading');
+            firstChunkReceived = false; // リセット
+        } // End of while(true) loop
+
+        const finalContentToDisplay = typeof aiResponse.content === 'string' ? aiResponse.content : combinedContentFromStream;
+
+        if (finalContentToDisplay || firstChunkReceived) { 
+            if (currentMessageDisplayElement && currentMessageDisplayElement.parentNode) {
+                // currentMessageDisplayElement がローディング状態なら、最終テキストで更新
+                if (currentMessageDisplayElement.classList.contains('loading')) {
+                    currentMessageDisplayElement.classList.remove('loading');
+                    currentMessageDisplayElement.setText(finalContentToDisplay || "(空の応答)");
+                } else if (currentMessageDisplayElement.textContent !== finalContentToDisplay) {
+                    // 既にテキストが表示されていて、最終結果と異なる場合のみ更新
+                    // (ストリーミングで表示済みで、ツール呼び出しがなかった場合はここを通らない)
+                    currentMessageDisplayElement.setText(finalContentToDisplay || "(空の応答)");
+                }
+            } else { 
+                // currentMessageDisplayElement が何らかの理由で存在しない場合 (ツール実行後に再作成されなかった等)
+                // または、initialLoadingMessageEl が currentMessageDisplayElement だったが削除された場合
+                this.uiManager.appendModelMessage(finalContentToDisplay || "(空の応答)");
+            }
+
+            await this.chatSessionManager.addAiMessage(finalContentToDisplay);
+            await this.chatLogger.appendLogEntry(`**${this.llmRoleName}**: ${finalContentToDisplay}\n`);
+        } else { 
+            // ストリームも開始されず、最終コンテンツもない場合
+            if (initialLoadingMessageEl && initialLoadingMessageEl.parentNode) { // sendMessage冒頭のローディングを削除
+                 initialLoadingMessageEl.remove();
+            }
+            // currentMessageDisplayElement が initialLoadingMessageEl と同じで、既に削除されている場合は何もしない
+            this.uiManager.appendModelMessage('エラー: LLMからの応答がありませんでした。');
+            await this.chatLogger.appendLogEntry(`**${this.llmRoleName}**: (応答なし)\n`);
+        }
+
     } catch (error: any) {
-        console.error(`[ChatView][${this.viewInstanceId}] Error preparing context via ChatContextBuilder:`, error.message, error.stack);
-        new Notice('LLMへのコンテキスト準備中にエラーが発生しました。');
-        llmContext = { 
-            character_setting_prompt: this.settings.systemPrompt || DEFAULT_SETTINGS.systemPrompt,
-            retrieved_context_string: "記憶からの関連情報は見つかりませんでした。",
-            current_time: moment().format('YYYY-MM-DD HH:mm:ss dddd'),
-            current_location_string: "現在地の取得に失敗しました。",
-            current_weather_string: "天気情報の取得に失敗しました。",
-        };
-    }
-
-    try {
-      const chainInput = {
-        input: trimmedMessageContent,
-        character_setting_prompt: llmContext.character_setting_prompt,
-        retrieved_context_string: llmContext.retrieved_context_string,
-        current_time: llmContext.current_time,
-        current_location_string: llmContext.current_location_string,
-        current_weather_string: llmContext.current_weather_string,
-      };
-      console.log(`[ChatView][${this.viewInstanceId}] Invoking chainWithHistory with input:`, { ...chainInput, retrieved_context_string: chainInput.retrieved_context_string.substring(0,100)+"..."});
-
-
-      const response = await this.chainWithHistory.invoke(
-        chainInput,
-        { configurable: { sessionId: "obsidian-memoria-session" } } 
-      );
-      loadingMessageEl.remove();
-      let responseText = '';
-
-      if (response && typeof response.content === 'string') {
-        responseText = response.content;
-      } else if (response && Array.isArray(response.content) && response.content.length > 0 && typeof response.content[0] === 'object' && response.content[0] !== null && 'text' in response.content[0]) {
-        responseText = (response.content[0] as any).text;
-      } else {
-        console.error(`[ChatView][${this.viewInstanceId}] Invalid response format:`, response);
-        responseText = 'エラー: 予期しない形式の応答がありました。';
-      }
-      this.uiManager.appendModelMessage(responseText);
-      await this.chatLogger.appendLogEntry(`**${this.llmRoleName}**: ${responseText}\n`);
-
-    } catch (error: any) {
-      console.error(`[ChatView][${this.viewInstanceId}] Error sending message:`, error.message, error.stack);
-      loadingMessageEl.remove();
-      let errorMessage = 'エラー: メッセージの送信中に問題が発生しました。';
-      if (error.message) errorMessage += `\n詳細: ${error.message}`;
-      this.uiManager.appendModelMessage(errorMessage);
-      new Notice(`チャットエラー: ${error.message || '不明なエラー'}`);
-      await this.chatLogger.appendLogEntry(`**${this.llmRoleName}**: (エラー発生) ${error.message || '不明なエラー'}\n`);
+        console.error(`[ChatView][${this.viewInstanceId}] Error sending message or processing tools:`, error.message, error.stack);
+        // エラー発生時は、表示されている可能性のあるメッセージ要素をクリーンアップ
+        if (initialLoadingMessageEl && initialLoadingMessageEl.parentNode) initialLoadingMessageEl.remove();
+        if (currentMessageDisplayElement && currentMessageDisplayElement !== initialLoadingMessageEl && currentMessageDisplayElement.parentNode) {
+            currentMessageDisplayElement.remove();
+        }
+        let errorMessage = 'エラー: メッセージの送信またはツール処理中に問題が発生しました。';
+        if (error.message) errorMessage += `\n詳細: ${error.message}`;
+        this.uiManager.appendModelMessage(errorMessage);
+        new Notice(`チャットエラー: ${error.message || '不明なエラー'}`);
+        await this.chatLogger.appendLogEntry(`**${this.llmRoleName}**: (エラー発生) ${error.message || '不明なエラー'}\n`);
     } finally {
-      this.uiManager.scrollToBottom();
+        this.uiManager.scrollToBottom();
     }
   }
 }
