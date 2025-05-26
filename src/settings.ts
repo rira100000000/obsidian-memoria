@@ -1,5 +1,5 @@
 // src/settings.ts
-import { App, PluginSettingTab, Setting, TextAreaComponent, TextComponent, SliderComponent, Notice } from 'obsidian';
+import { App, PluginSettingTab, Setting, TextAreaComponent, Notice } from 'obsidian';
 import ObsidianMemoria from '../main';
 import { ApiInfoModal } from './ui/apiInfoModal';
 
@@ -118,12 +118,10 @@ export class MemoriaSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    let maxTagsSlider: SliderComponent;
     const maxTagsSetting = new Setting(containerEl)
         .setName('Max Tags to Retrieve')
         .setDesc(`Maximum number of Tag Profiling Notes (TPNs) to retrieve initially based on keyword relevance. Current: ${this.plugin.settings.maxTagsToRetrieve}`)
         .addSlider(slider => {
-            maxTagsSlider = slider;
             slider
                 .setLimits(1, 20, 1)
                 .setValue(this.plugin.settings.maxTagsToRetrieve)
@@ -135,13 +133,10 @@ export class MemoriaSettingTab extends PluginSettingTab {
                 });
         });
 
-
-    let maxContextLengthSlider: SliderComponent;
     const maxContextLengthSetting = new Setting(containerEl)
         .setName('Max Context Length for Final LLM')
         .setDesc(`Maximum character length of the combined retrieved context passed to the main LLM. Current: ${this.plugin.settings.maxContextLength}`)
         .addSlider(slider => {
-            maxContextLengthSlider = slider;
             slider
                 .setLimits(1000, 10000, 100)
                 .setValue(this.plugin.settings.maxContextLength)
@@ -153,12 +148,10 @@ export class MemoriaSettingTab extends PluginSettingTab {
                 });
         });
 
-    let maxContextLengthForEvalSlider: SliderComponent;
     const maxContextLengthForEvalSetting = new Setting(containerEl)
         .setName('Max Context Length for LLM Evaluation')
         .setDesc(`Maximum character length of the context passed to the LLM for evaluation steps. Current: ${this.plugin.settings.maxContextLengthForEvaluation}`)
         .addSlider(slider => {
-            maxContextLengthForEvalSlider = slider;
             slider
                 .setLimits(1000, 10000, 100)
                 .setValue(this.plugin.settings.maxContextLengthForEvaluation)

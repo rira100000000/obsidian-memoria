@@ -1,5 +1,5 @@
 // src/ui/chatWindow.ts
-import { ItemView, WorkspaceLeaf, Notice, moment, TFile, App } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice } from 'obsidian';
 import ObsidianMemoria from '../../main';
 import { GeminiPluginSettings, DEFAULT_SETTINGS } from '../settings';
 import {
@@ -7,19 +7,12 @@ import {
   GoogleGenerativeAIChatCallOptions,
 } from "@langchain/google-genai";
 import {
-  HumanMessage,
   AIMessage,
   SystemMessage,
   BaseMessage,
   ToolMessage,
   AIMessageChunk,
 } from "@langchain/core/messages";
-import {
-  ChatPromptTemplate,
-  MessagesPlaceholder,
-  SystemMessagePromptTemplate,
-  HumanMessagePromptTemplate
-} from "@langchain/core/prompts";
 
 import { TagProfiler } from '../tagProfiler';
 import { ContextRetriever } from '../contextRetriever';
@@ -28,7 +21,7 @@ import { ChatLogger } from '../chatLogger';
 import { ChatUIManager } from './chatUIManager';
 import { ChatSessionManager } from '../chatSessionManager';
 import { PromptFormatter } from '../promptFormatter';
-import { ChatContextBuilder, LlmContextInput } from '../chatContextBuilder';
+import { ChatContextBuilder } from '../chatContextBuilder';
 import { ToolManager } from '../tools/toolManager';
 import { StructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
@@ -203,7 +196,7 @@ export class ChatView extends ItemView {
     let currentMessageDisplayElement: HTMLElement | null = initialLoadingMessageEl;
 
     try {
-        let currentMessages: BaseMessage[] = await this.chatSessionManager.getMessages();
+        const currentMessages: BaseMessage[] = await this.chatSessionManager.getMessages();
         const isFirstActualUserMessage = currentMessages.filter(msg => msg._getType() === "human").length === 1;
 
         let currentLogPath = this.chatLogger.getLogFilePath();

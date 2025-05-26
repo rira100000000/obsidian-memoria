@@ -1,5 +1,5 @@
 // main.ts
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, WorkspaceLeaf, PluginSettingTab, Setting } from 'obsidian';
+import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
 import { GeminiPluginSettings, DEFAULT_SETTINGS, MemoriaSettingTab } from './src/settings';
 import { CHAT_VIEW_TYPE, ChatView } from './src/ui/chatWindow';
 import { LocationFetcher } from './src/locationFetcher';
