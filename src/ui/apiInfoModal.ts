@@ -1,7 +1,6 @@
 // src/ui/apiInfoModal.ts
 import { App, Modal, Setting } from 'obsidian';
-import { LocationFetcher } from '../locationFetcher'; // パスを修正
-import { CurrentContextualInfo } from '../types';
+import { LocationFetcher } from '../locationFetcher';
 
 export class ApiInfoModal extends Modal {
   private locationFetcher: LocationFetcher;
