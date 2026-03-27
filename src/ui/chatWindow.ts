@@ -292,14 +292,20 @@ export class ChatView extends ItemView {
                 }
             }
 
-            if (!accumulatedChunk && firstChunkReceived) {
+            if (accumulatedChunk) {
+                 // accumulatedChunk から必要な情報だけを抽出して新しい AIMessage を作る
+                 // chunk をそのまま渡すと内部の循環参照（rxjs等）が残りクラッシュする
+                 // ただし additional_kwargs, response_metadata は Gemini の thought_signature 等に必要
+                 aiResponse = new AIMessage({
+                     content: combinedContentFromStream,
+                     tool_calls: accumulatedChunk.tool_calls || [],
+                     additional_kwargs: accumulatedChunk.additional_kwargs || {},
+                     response_metadata: accumulatedChunk.response_metadata || {},
+                 });
+            } else if (firstChunkReceived) {
                  aiResponse = new AIMessage({content: combinedContentFromStream});
-            } else if (!accumulatedChunk && !firstChunkReceived ) {
-                 aiResponse = new AIMessage({content: ""}); 
-            } else if (accumulatedChunk) {
-                 aiResponse = new AIMessage(accumulatedChunk);
             } else {
-                 aiResponse = new AIMessage({content: "LLMからの応答が予期せず空でした。"});
+                 aiResponse = new AIMessage({content: ""});
             }
 
             messagesForLlm.push(aiResponse);

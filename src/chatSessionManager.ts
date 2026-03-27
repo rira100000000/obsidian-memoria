@@ -1,6 +1,6 @@
 // src/chatSessionManager.ts
 import { App, Notice, TFile } from 'obsidian';
-import { ChatMessageHistory } from "langchain/stores/message/in_memory";
+import { InMemoryChatMessageHistory } from "@langchain/core/chat_history";
 import { BaseMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 import { ChatUIManager, ConfirmationModal } from './ui/chatUIManager';
 import { ChatLogger } from './chatLogger';
@@ -12,7 +12,7 @@ import { NarrativeBuffer } from './narrativeBuffer';
 export class ChatSessionManager {
     private app: App;
     private plugin: ObsidianMemoria;
-    public messageHistory: ChatMessageHistory;
+    public messageHistory: InMemoryChatMessageHistory;
     private uiManager: ChatUIManager;
     private chatLogger: ChatLogger;
     private tagProfiler: TagProfiler;
@@ -36,7 +36,7 @@ export class ChatSessionManager {
         this.chatLogger = chatLogger;
         this.tagProfiler = tagProfiler;
         this.llmRoleName = initialLlmRoleName;
-        this.messageHistory = new ChatMessageHistory();
+        this.messageHistory = new InMemoryChatMessageHistory();
         this.managerInstanceId = Math.random().toString(36).substring(2, 8);
         console.log(`[ChatSessionManager][${this.managerInstanceId}] New instance created. Initial RoleName: ${initialLlmRoleName}. Using ChatLogger ID: ${(this.chatLogger as any).instanceId}`);
         this.reflectionTool = new ConversationReflectionTool(this.plugin);
@@ -116,7 +116,7 @@ export class ChatSessionManager {
 
             console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Resetting chatLogger, messageHistory, and narrativeBuffer...`);
             this.chatLogger.resetLogFile();
-            this.messageHistory = new ChatMessageHistory();
+            this.messageHistory = new InMemoryChatMessageHistory();
             this.narrativeBuffer.reset();
 
             this.uiManager.clearMessages();

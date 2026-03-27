@@ -4,6 +4,7 @@ import { z } from "zod"; // z をインポート
 import ObsidianMemoria from "../../main";
 import { ConversationReflectionTool } from "./conversationReflectionTool";
 import { TodoTool } from "./todoTool";
+import { VaultSearchTool } from "./vaultSearchTool";
 
 // TSchema が ZodObject を拡張することを保証するジェネリック型制約
 type AnyZodObject = z.ZodObject<any, any, any, any>;
@@ -23,11 +24,11 @@ export class ToolManager {
   private initializeTools(): void {
     const conversationReflectionTool = new ConversationReflectionTool(this.plugin);
     const todoTool = new TodoTool(this.plugin);
+    const vaultSearchTool = new VaultSearchTool(this.plugin);
 
-    // registerTool は StructuredTool<AnyZodObject> を期待するため、
-    // 各ツールがこの型に代入可能であることを確認
     this.registerTool(conversationReflectionTool);
     this.registerTool(todoTool);
+    this.registerTool(vaultSearchTool);
   }
 
   public registerTool(tool: StructuredTool<AnyZodObject>): void {
