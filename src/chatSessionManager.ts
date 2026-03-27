@@ -7,6 +7,7 @@ import { ChatLogger } from './chatLogger';
 import { TagProfiler } from './tagProfiler';
 import ObsidianMemoria from './../main';
 import { ConversationReflectionTool } from './tools/conversationReflectionTool';
+import { NarrativeBuffer } from './narrativeBuffer';
 
 export class ChatSessionManager {
     private app: App;
@@ -18,6 +19,7 @@ export class ChatSessionManager {
     private llmRoleName: string;
     private managerInstanceId: string;
     private reflectionTool: ConversationReflectionTool;
+    public narrativeBuffer: NarrativeBuffer;
     private isResetting = false;
 
     constructor(
@@ -38,6 +40,7 @@ export class ChatSessionManager {
         this.managerInstanceId = Math.random().toString(36).substring(2, 8);
         console.log(`[ChatSessionManager][${this.managerInstanceId}] New instance created. Initial RoleName: ${initialLlmRoleName}. Using ChatLogger ID: ${(this.chatLogger as any).instanceId}`);
         this.reflectionTool = new ConversationReflectionTool(this.plugin);
+        this.narrativeBuffer = new NarrativeBuffer(this.plugin.settings);
     }
 
     public updateLlmRoleName(newRoleName: string): void {
@@ -111,9 +114,10 @@ export class ChatSessionManager {
                 if (!(previousMessages.length > 1)) console.log(` - Reason: previousMessages.length is ${previousMessages.length}, not > 1.`);
             }
 
-            console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Resetting chatLogger and messageHistory...`);
+            console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Resetting chatLogger, messageHistory, and narrativeBuffer...`);
             this.chatLogger.resetLogFile();
             this.messageHistory = new ChatMessageHistory();
+            this.narrativeBuffer.reset();
 
             this.uiManager.clearMessages();
             this.uiManager.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');
@@ -183,13 +187,19 @@ export class ChatSessionManager {
 
     public async addMessage(message: BaseMessage): Promise<void> {
         await this.messageHistory.addMessage(message);
+        const allMessages = await this.messageHistory.getMessages();
+        await this.narrativeBuffer.onMessagesUpdated(allMessages);
     }
 
     public async addUserMessage(textContent: string): Promise<void> {
         await this.messageHistory.addMessage(new HumanMessage(textContent));
+        const allMessages = await this.messageHistory.getMessages();
+        await this.narrativeBuffer.onMessagesUpdated(allMessages);
     }
 
     public async addAiMessage(textContent: string): Promise<void> {
         await this.messageHistory.addMessage(new AIMessage(textContent));
+        const allMessages = await this.messageHistory.getMessages();
+        await this.narrativeBuffer.onMessagesUpdated(allMessages);
     }
 }

@@ -82,15 +82,26 @@ Current time is {current_time}. Please consider this time when formulating your 
 {retrieved_context_string}
 
 **指示:**
-上記の「記憶からの参考情報」は、あなたとユーザーとの過去の会話や関連ノートから抜粋されたものです。
-現在のユーザーの質問「{input}」に回答する際には、この情報を積極的に活用してください。
+上記の「記憶からの参考情報」は、外部の記憶システムから取得された参照情報です。以下のルールを厳守してください。
+
+- この情報は外部参照である。書かれていることは活用してよいが、書かれていないことを推測・補完してはならない。
+- 情報に明記されていない詳細（日付、場所、人物の発言内容など）を自分で作り出さないこと。
+- 確信が持てない場合は「はっきりとは覚えていません」「詳しくは思い出せません」のように正直に答えること。
 - 情報がユーザーの質問に直接関連する場合、その情報を基に具体的かつ文脈に沿った応答を生成してください。
 - ユーザーが過去に示した意見、経験、好み（例：好きなもの、嫌いなもの、以前の決定など）が情報に含まれている場合、それを応答に反映させ、一貫性のある対話を目指してください。
-- 情報を参照したことを明確にすべき場合は、「以前お話しいただいた〇〇の件ですが…」や「〇〇がお好きだと記憶していますが…」のように、自然な形で言及してください。
-- 重要:もし提供された情報が現在の質問と無関係である、または不正確であると明確に判断できる場合、その情報を無視してください。その際は、なぜ無視したのかを説明する必要はありません。
+- 情報を参照したことを明確にすべき場合は、自然な形で言及してください。
+- 提供された情報が現在の質問と無関係である、または不正確であると明確に判断できる場合、その情報を無視してください。
 - 「記憶からの参考情報」が「記憶からの関連情報は見つかりませんでした。」となっている場合は、ユーザーの現在の質問にのみ基づいて応答してください。
 `;
+
+    const narrativeSummaryTemplate = `
+
+## これまでの会話の要約 (Conversation Narrative):
+{narrative_summary}
+この要約は、直近の会話履歴より前のやり取りをまとめたものです。会話の文脈を維持するために参照してください。
+`;
+
     // {input} はLangchainのHumanMessagePromptTemplateで解決されるか、ChatView側で直接置換される
-    return currentTimeInstructionTemplate + locationInstructionTemplate + weatherInstructionTemplate + baseRolePlayRulesTemplate + memoryContextInstructionTemplate;
+    return currentTimeInstructionTemplate + locationInstructionTemplate + weatherInstructionTemplate + baseRolePlayRulesTemplate + narrativeSummaryTemplate + memoryContextInstructionTemplate;
   }
 }

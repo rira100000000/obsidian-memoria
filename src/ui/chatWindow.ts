@@ -215,7 +215,8 @@ export class ChatView extends ItemView {
             userInputText,
             this.llmRoleName,
             currentMessages,
-            isFirstActualUserMessage
+            isFirstActualUserMessage,
+            this.chatSessionManager.narrativeBuffer
         );
          if (isFirstActualUserMessage) {
             if (this.settings.showLocationInChat && llmContext.current_location_string && !llmContext.current_location_string.includes("失敗") && !llmContext.current_location_string.includes("最初のメッセージでのみ")) {
@@ -232,11 +233,13 @@ export class ChatView extends ItemView {
             .replace('{current_location_string}', llmContext.current_location_string)
             .replace('{current_weather_string}', llmContext.current_weather_string)
             .replace('{retrieved_context_string}', llmContext.retrieved_context_string)
+            .replace('{narrative_summary}', llmContext.narrative_summary || 'まだ要約はありません（会話開始直後）')
             .replace('{input}', userInputText);
 
+        // ワーキングメモリ（直近Nターン）のみをLLMに渡す（ナラティブ要約で古いターンはカバー）
         const messagesForLlm: BaseMessage[] = [
             new SystemMessage(systemPromptStr),
-            ...currentMessages
+            ...llmContext.working_memory_messages
         ];
         
         const toolsOption: StructuredTool<z.ZodObject<any, any, any, any>>[] = this.toolManager.getLangchainTools();

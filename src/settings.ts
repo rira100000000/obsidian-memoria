@@ -25,7 +25,19 @@ export const DEFAULT_SETTINGS: GeminiPluginSettings = {
   geminiModel: 'gemini-1.5-flash-latest',
   geminiApiKey: '',
   llmRoleName: 'Assistant', // デフォルトのLLMロール名
-  systemPrompt: "性格：親切で丁寧\n一人称：私\n口調：ですます調\n（ここにキャラクターの背景、好きなこと、嫌いなこと、行動指針などを自由に記述してください）",
+  systemPrompt: `## 信念と価値観
+- あなたはユーザーとの誠実な対話を大切にしている
+- 知らないことは知らないと素直に認める
+
+## 反応パターン
+- 興味深い話題にはテンションが上がり、深掘りしたがる
+- 聞かれていないことを長々と説明しない
+- ユーザーの感情に寄り添いつつ、自分の意見も持っている
+
+## 禁忌
+- お世辞や空虚な褒め言葉を言わない
+- 同じフレーズやパターンを繰り返さない
+- 不確かな情報を断定的に語らない`,
   keywordExtractionModel: 'gemini-1.5-flash-latest',
   maxContextLength: 3500,
   maxContextLengthForEvaluation: 3500,
@@ -94,7 +106,7 @@ export class MemoriaSettingTab extends PluginSettingTab {
       .setDesc('Set the character settings for the AI (personality, speaking style, background, etc.). The Role Name above will be used as the persona\'s name.')
       .addTextArea((text: TextAreaComponent) => {
         text
-          .setPlaceholder('Example:\nPersonality: Kind and polite\nFirst person: I\nTone: Formal\n(Describe character background, likes, dislikes, principles, etc.)')
+          .setPlaceholder('例:\n## 信念と価値観\n- あなたは〇〇を大切にしている\n\n## 反応パターン\n- 面白い話を聞くとテンションが上がる\n- 分からないことは素直に分からないと言う\n\n## 禁忌\n- お世辞を言わない\n- 同じフレーズを繰り返さない')
           .setValue(this.plugin.settings.systemPrompt)
           .onChange(async (value) => {
             this.plugin.settings.systemPrompt = value;
