@@ -43,6 +43,9 @@
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
 }
 
 .user-message {
@@ -178,6 +181,9 @@
   font-family: var(--font-monospace);
   font-size: 0.78em;
   line-height: 1.4;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
 }
 
 .memoria-debug-entry {
