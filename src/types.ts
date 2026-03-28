@@ -85,19 +85,8 @@ export interface RetrievedContextItem {
 
 export interface RetrievedContext {
   originalPrompt: string;
-  identifiedKeywords: Array<{ keyword: string; inPromptScore: number; finalScore?: number; correspondingTag?: string }>;
   retrievedItems: RetrievedContextItem[];
   llmContextPrompt: string;
-  nextSnToFetch?: string[];
-  nextFlToFetch?: string;
-  llmEvaluationResponse?: string;
-}
-
-export interface LlmContextEvaluationResponse {
-  sufficient_for_response: boolean;
-  reasoning?: string;
-  next_summary_notes_to_fetch?: string[];
-  requires_full_log_for_summary_note?: string;
 }
 
 // --- LocationFetcher で使用する型定義 ---

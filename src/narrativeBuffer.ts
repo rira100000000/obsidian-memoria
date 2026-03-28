@@ -15,6 +15,7 @@ export class NarrativeBuffer {
   private summarizationLlm: ChatGoogleGenerativeAI | null = null;
   private settings: GeminiPluginSettings;
   private lastSummarizedMessageCount: number = 0;
+  private isSummarizing: boolean = false;
 
   constructor(settings: GeminiPluginSettings, workingMemorySize: number = 3) {
     this.settings = settings;
@@ -52,12 +53,13 @@ export class NarrativeBuffer {
    * @param allMessages 全会話履歴
    */
   public async onMessagesUpdated(allMessages: BaseMessage[]): Promise<void> {
+    if (this.isSummarizing) return;
+
     // ワーキングメモリサイズ × 2（user+ai で1ターン）を超えた分を要約対象にする
     const workingMemoryMessageCount = this.workingMemorySize * 2;
     const totalMessages = allMessages.length;
 
     if (totalMessages <= workingMemoryMessageCount) {
-      // まだワーキングメモリに収まっている
       return;
     }
 
@@ -76,8 +78,13 @@ export class NarrativeBuffer {
       return;
     }
 
-    await this.updateNarrativeSummary(newlyAgedMessages);
-    this.lastSummarizedMessageCount = messagesToSummarize.length;
+    this.isSummarizing = true;
+    try {
+      await this.updateNarrativeSummary(newlyAgedMessages);
+      this.lastSummarizedMessageCount = messagesToSummarize.length;
+    } finally {
+      this.isSummarizing = false;
+    }
   }
 
   /**

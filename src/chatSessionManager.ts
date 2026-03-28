@@ -188,18 +188,24 @@ export class ChatSessionManager {
     public async addMessage(message: BaseMessage): Promise<void> {
         await this.messageHistory.addMessage(message);
         const allMessages = await this.messageHistory.getMessages();
-        await this.narrativeBuffer.onMessagesUpdated(allMessages);
+        this.narrativeBuffer.onMessagesUpdated(allMessages).catch(e => {
+            console.error("[ChatSessionManager] Background narrative buffer update failed:", e.message);
+        });
     }
 
     public async addUserMessage(textContent: string): Promise<void> {
         await this.messageHistory.addMessage(new HumanMessage(textContent));
         const allMessages = await this.messageHistory.getMessages();
-        await this.narrativeBuffer.onMessagesUpdated(allMessages);
+        this.narrativeBuffer.onMessagesUpdated(allMessages).catch(e => {
+            console.error("[ChatSessionManager] Background narrative buffer update failed:", e.message);
+        });
     }
 
     public async addAiMessage(textContent: string): Promise<void> {
         await this.messageHistory.addMessage(new AIMessage(textContent));
         const allMessages = await this.messageHistory.getMessages();
-        await this.narrativeBuffer.onMessagesUpdated(allMessages);
+        this.narrativeBuffer.onMessagesUpdated(allMessages).catch(e => {
+            console.error("[ChatSessionManager] Background narrative buffer update failed:", e.message);
+        });
     }
 }
