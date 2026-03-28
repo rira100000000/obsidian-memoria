@@ -4,11 +4,13 @@ import { GeminiPluginSettings, DEFAULT_SETTINGS, MemoriaSettingTab } from './src
 import { CHAT_VIEW_TYPE, ChatView } from './src/ui/chatWindow';
 import { LocationFetcher } from './src/locationFetcher';
 import { ToolManager } from './src/tools/toolManager'; // ToolManagerをインポート
+import { EmbeddingStore } from './src/embeddingStore';
 
 export default class ObsidianMemoria extends Plugin {
   settings: GeminiPluginSettings;
   locationFetcher: LocationFetcher;
   toolManager: ToolManager; // ToolManagerのインスタンスを保持
+  embeddingStore: EmbeddingStore; // EmbeddingStoreのインスタンスを保持
 
   async onload() {
     console.log('Loading Obsidian Memoria Plugin');
@@ -17,6 +19,9 @@ export default class ObsidianMemoria extends Plugin {
 
     // LocationFetcherを初期化
     this.locationFetcher = new LocationFetcher(this);
+    // EmbeddingStoreを初期化
+    this.embeddingStore = new EmbeddingStore(this);
+    await this.embeddingStore.initialize();
     // ToolManagerを初期化
     this.toolManager = new ToolManager(this);
 
@@ -42,6 +47,19 @@ export default class ObsidianMemoria extends Plugin {
       name: 'Open Memoria Chat',
       callback: () => {
         this.activateView(CHAT_VIEW_TYPE);
+      },
+    });
+
+    // セマンティック検索インデックス再構築コマンド
+    this.addCommand({
+      id: 'rebuild-embedding-index',
+      name: 'Rebuild Semantic Search Index',
+      callback: async () => {
+        if (this.embeddingStore) {
+          await this.embeddingStore.rebuildIndex();
+        } else {
+          new Notice('EmbeddingStoreが初期化されていません。');
+        }
       },
     });
 
@@ -72,6 +90,9 @@ export default class ObsidianMemoria extends Plugin {
     // 設定変更を関連モジュールに通知
     if (this.locationFetcher && typeof this.locationFetcher.onSettingsChanged === 'function') {
       this.locationFetcher.onSettingsChanged(this.settings);
+    }
+    if (this.embeddingStore && typeof this.embeddingStore.onSettingsChanged === 'function') {
+      this.embeddingStore.onSettingsChanged();
     }
     if (this.toolManager && typeof this.toolManager.onSettingsChanged === 'function') {
       this.toolManager.onSettingsChanged(); // ToolManagerにも設定変更を通知

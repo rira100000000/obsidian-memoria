@@ -87,3 +87,154 @@
   align-self: flex-end;
   min-height: 40px; /* テキストエリアの最小高さに合わせる */
 }
+
+/* --- Status Indicator --- */
+.memoria-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background-color: var(--background-secondary);
+  border-top: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.memoria-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--background-modifier-border);
+  border-top-color: var(--interactive-accent);
+  border-radius: 50%;
+  animation: memoria-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes memoria-spin {
+  to { transform: rotate(360deg); }
+}
+
+.memoria-status-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- Debug Toggle Button --- */
+.memoria-debug-toggle-button {
+  font-size: 0.8em;
+  padding: 2px 8px;
+  opacity: 0.6;
+}
+
+.memoria-debug-toggle-button:hover {
+  opacity: 1;
+}
+
+.memoria-debug-toggle-button.is-active {
+  opacity: 1;
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* --- Debug Panel --- */
+.memoria-debug-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: 250px;
+  border-top: 2px solid var(--interactive-accent);
+  background-color: var(--background-primary-alt);
+  flex-shrink: 0;
+}
+
+.memoria-debug-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 10px;
+  background-color: var(--background-secondary-alt);
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+.memoria-debug-title {
+  font-weight: 600;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.memoria-debug-clear-button {
+  font-size: 0.75em;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.memoria-debug-content {
+  overflow-y: auto;
+  padding: 4px 8px;
+  font-family: var(--font-monospace);
+  font-size: 0.78em;
+  line-height: 1.4;
+}
+
+.memoria-debug-entry {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--background-modifier-border-hover);
+}
+
+.memoria-debug-entry:last-child {
+  border-bottom: none;
+}
+
+.memoria-debug-entry-header {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.memoria-debug-timestamp {
+  color: var(--text-faint);
+  font-size: 0.9em;
+  flex-shrink: 0;
+}
+
+.memoria-debug-category {
+  color: var(--interactive-accent);
+  font-weight: 600;
+  font-size: 0.9em;
+  flex-shrink: 0;
+}
+
+.memoria-debug-message {
+  color: var(--text-normal);
+  padding-left: 4px;
+}
+
+.memoria-debug-data {
+  margin-top: 2px;
+  padding: 4px 8px;
+  background-color: var(--background-secondary);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.memoria-debug-data pre {
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.memoria-debug-separator {
+  padding: 6px 0 4px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 0.85em;
+  font-style: italic;
+  border-top: 1px dashed var(--background-modifier-border);
+  margin-top: 4px;
+}

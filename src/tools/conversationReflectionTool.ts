@@ -45,6 +45,7 @@ This tool helps in consolidating learnings and key points from the dialogue into
     private keywordLlm: ChatGoogleGenerativeAI | null = null;
     private tagProfiler: TagProfiler;
     private toolInstanceId: string; // インスタンスIDを追加
+    private lastCreatedFile: TFile | null = null; // 最後に作成されたファイルを保持
 
     constructor(plugin: ObsidianMemoria, llm?: ChatGoogleGenerativeAI) {
         super();
@@ -203,7 +204,11 @@ JSON配列のみを返し、他のテキストは含めないでください。
         return title.replace(/[\\/:*?"<>|#^[\]]/g, '').replace(/\s+/g, '_').substring(0, 50);
     }
 
-    protected async _call(input: ConversationReflectionToolInput): Promise<TFile | string> {
+    public getLastCreatedFile(): TFile | null {
+        return this.lastCreatedFile;
+    }
+
+    protected async _call(input: ConversationReflectionToolInput): Promise<string> {
         const callId = Math.random().toString(36).substring(2, 8); // この呼び出し固有のID
         console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] _call CALLED. History length: ${input.conversationHistory?.length}, roleName: ${input.llmRoleName}, logFile: ${input.fullLogFileName}`);
 
@@ -346,6 +351,21 @@ ${reflectionBodyContent}
             console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Displaying Notice: ${llmRoleNameToUse}による振り返り(サマリー)が ${createdFile.basename} に保存されました。`);
             new Notice(`${llmRoleNameToUse}による振り返り(サマリー)が ${createdFile.basename} に保存されました。`);
             
+            // SN作成後にセマンティック検索インデックスを更新
+            try {
+                if (this.plugin.embeddingStore && this.plugin.settings.enableSemanticSearch) {
+                    await this.plugin.embeddingStore.embedAndStore(
+                        createdFile.path,
+                        fileContent,
+                        'SN',
+                        { title: parsedResponse.conversationTitle, tags: finalTags }
+                    );
+                    console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] SN embedded for semantic search: ${createdFile.path}`);
+                }
+            } catch (embedError: any) {
+                console.error(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Error embedding SN:`, embedError.message);
+            }
+
             if (finalTags.length > 0) {
                 console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Starting tag profiling for ${createdFile.basename}...`);
                 try {
@@ -355,14 +375,33 @@ ${reflectionBodyContent}
                     console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Tag profiling completed for ${createdFile.basename}.`);
                     console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Displaying Notice: ${createdFile.basename} のタグプロファイル処理が完了しました。`);
                     new Notice(`${createdFile.basename} のタグプロファイル処理が完了しました。`);
+
+                    // TagProfiler完了後、更新されたTPNをセマンティック検索インデックスに追加
+                    try {
+                        if (this.plugin.embeddingStore && this.plugin.settings.enableSemanticSearch) {
+                            for (const tag of finalTags) {
+                                const safeName = tag.replace(/[\\/:*?"<>|#^[\]]/g, '_');
+                                const tpnPath = `TagProfilingNote/TPN-${safeName}.md`;
+                                const tpnFile = this.app.vault.getAbstractFileByPath(tpnPath);
+                                if (tpnFile instanceof TFile) {
+                                    const tpnContent = await this.app.vault.cachedRead(tpnFile);
+                                    await this.plugin.embeddingStore.embedAndStore(tpnPath, tpnContent, 'TPN', { title: tag, tags: [tag] });
+                                }
+                            }
+                            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] TPNs embedded for semantic search.`);
+                        }
+                    } catch (embedError: any) {
+                        console.error(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Error embedding TPNs:`, embedError.message);
+                    }
                 } catch (tpError: any) {
                     console.error(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Error during tag profiling for ${createdFile.basename}:`, tpError, tpError.stack);
                     console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] Displaying Notice: ${createdFile.basename} のタグプロファイル処理中にエラーが発生しました。`);
                     new Notice(`${createdFile.basename} のタグプロファイル処理中にエラーが発生しました。`);
                 }
             }
-            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] _call FINISHED successfully. Returning TFile.`);
-            return createdFile;
+            this.lastCreatedFile = createdFile;
+            console.log(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] _call FINISHED successfully. File: ${createdFile.path}`);
+            return `振り返りノートを作成しました: ${createdFile.basename} (${createdFile.path})`;
 
         } catch (error: any) {
             console.error(`[ConversationReflectionTool][${this.toolInstanceId}][_call-${callId}] UNEXPECTED ERROR in _call:`, error, error.stack);
@@ -378,9 +417,9 @@ ${reflectionBodyContent}
     public async generateAndSaveReflection(history: BaseMessage[], roleName: string, logFileName: string): Promise<TFile | string> {
         const callId = Math.random().toString(36).substring(2, 8);
         console.log(`[ConversationReflectionTool][${this.toolInstanceId}][GenSave-${callId}] generateAndSaveReflection CALLED. Delegating to _call.`);
-        return this._call({
+        this.lastCreatedFile = null;
+        const result = await this._call({
             conversationHistory: history.map(msg => {
-                // msg.content が文字列でない場合（ストリーミングチャンクの複合オブジェクト等）を安全に処理
                 let content: string;
                 if (typeof msg.content === 'string') {
                     content = msg.content;
@@ -394,5 +433,7 @@ ${reflectionBodyContent}
             llmRoleName: roleName && roleName.trim() ? roleName.trim() : (this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName),
             fullLogFileName: logFileName
         });
+        // _call成功時はlastCreatedFileにTFileが保存される
+        return this.lastCreatedFile || result;
     }
 }

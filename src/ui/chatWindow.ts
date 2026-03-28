@@ -23,8 +23,7 @@ import { ChatSessionManager } from '../chatSessionManager';
 import { PromptFormatter } from '../promptFormatter';
 import { ChatContextBuilder } from '../chatContextBuilder';
 import { ToolManager } from '../tools/toolManager';
-import { StructuredTool } from '@langchain/core/tools';
-import { z } from 'zod';
+import { ProcessingCallbacks } from '../types';
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
@@ -55,7 +54,7 @@ export class ChatView extends ItemView {
     console.log(`[ChatView][${this.viewInstanceId}] Constructor called. Initial RoleName: ${this.llmRoleName}`);
 
     this.tagProfiler = new TagProfiler(this.plugin);
-    this.contextRetriever = new ContextRetriever(this.plugin);
+    this.contextRetriever = new ContextRetriever(this.plugin, this.plugin.embeddingStore);
     this.locationFetcher = plugin.locationFetcher;
     this.promptFormatter = new PromptFormatter(this.settings);
     this.chatContextBuilder = new ChatContextBuilder(
@@ -80,6 +79,22 @@ export class ChatView extends ItemView {
           apiKey: this.settings.geminiApiKey,
           model: this.settings.geminiModel,
         });
+        // Web検索有効時: google_searchとfunction callingを併用するために
+        // tool_config.include_server_side_tool_invocations を注入する
+        if (this.settings.enableWebSearch) {
+          const originalInvocationParams = (this.chatModel as any).invocationParams.bind(this.chatModel);
+          (this.chatModel as any).invocationParams = (options: any) => {
+            const params = originalInvocationParams(options);
+            // google_searchとfunction callingの併用にはこの設定が必要
+            // 旧SDKはcamelCaseをそのまま送信し、APIは両形式を受け付ける
+            const existingConfig = params.toolConfig || {};
+            params.toolConfig = {
+              ...existingConfig,
+              includeServerSideToolInvocations: true,
+            };
+            return params;
+          };
+        }
         console.log(`[ChatView][${this.viewInstanceId}] Chat model initialized. LLM Role: ${this.llmRoleName}`);
       } catch (error: any) {
         console.error(`[ChatView][${this.viewInstanceId}] Failed to initialize ChatGoogleGenerativeAI model:`, error.message);
@@ -110,6 +125,7 @@ export class ChatView extends ItemView {
     this.contextRetriever.onSettingsChanged();
     this.chatContextBuilder.onSettingsChanged(this.settings);
     if (this.toolManager) this.toolManager.onSettingsChanged();
+    if (this.uiManager) this.uiManager.setDebugMode(this.settings.enableDebugLog ?? false);
 
     this.updateTitle();
     console.log(`[ChatView][${this.viewInstanceId}] Settings changed, relevant modules re-initialized/updated.`);
@@ -139,6 +155,7 @@ export class ChatView extends ItemView {
         () => this.chatSessionManager.resetChat(false),
         () => this.chatSessionManager.confirmAndDiscardChat()
     );
+    this.uiManager.setDebugMode(this.settings.enableDebugLog ?? false);
 
     this.chatSessionManager = new ChatSessionManager(
         this.app,
@@ -190,6 +207,23 @@ export class ChatView extends ItemView {
     await this.chatLogger.appendLogEntry(`**User**: ${userInputText}\n`);
     this.uiManager.resetInputField();
 
+    // デバッグログにセパレーターを追加
+    this.uiManager.addDebugLogSeparator(userInputText);
+    this.uiManager.addDebugLogEntry('送信', `ユーザーメッセージ: ${userInputText}`);
+
+    // ステータスインジケーターを表示
+    this.uiManager.showStatus('準備しています...');
+
+    // プログレスコールバック
+    const callbacks: ProcessingCallbacks = {
+      onProgress: (phase: string) => {
+        this.uiManager.showStatus(phase);
+      },
+      onDebugLog: (category: string, message: string, data?: string) => {
+        this.uiManager.addDebugLogEntry(category, message, data);
+      }
+    };
+
     // 初期ローディングメッセージ要素
     const initialLoadingMessageEl = this.uiManager.appendMessage('応答を待っています...', 'loading');
     // ストリーミングや最終応答を表示するためのUI要素を管理する変数
@@ -216,7 +250,8 @@ export class ChatView extends ItemView {
             this.llmRoleName,
             currentMessages,
             isFirstActualUserMessage,
-            this.chatSessionManager.narrativeBuffer
+            this.chatSessionManager.narrativeBuffer,
+            callbacks
         );
          if (isFirstActualUserMessage) {
             if (this.settings.showLocationInChat && llmContext.current_location_string && !llmContext.current_location_string.includes("失敗") && !llmContext.current_location_string.includes("最初のメッセージでのみ")) {
@@ -241,8 +276,15 @@ export class ChatView extends ItemView {
             new SystemMessage(systemPromptStr),
             ...llmContext.working_memory_messages
         ];
+
+        callbacks.onDebugLog?.('コンテキスト', `システムプロンプト長: ${systemPromptStr.length}文字`);
+        callbacks.onDebugLog?.('コンテキスト', `ワーキングメモリ: ${llmContext.working_memory_messages.length}メッセージ`);
+        if (llmContext.narrative_summary) {
+          callbacks.onDebugLog?.('コンテキスト', `ナラティブ要約: ${llmContext.narrative_summary.substring(0, 100)}...`);
+        }
+        this.uiManager.showStatus('応答を生成しています...');
         
-        const toolsOption: StructuredTool<z.ZodObject<any, any, any, any>>[] = this.toolManager.getLangchainTools();
+        const toolsOption = this.toolManager.getLangchainTools();
         let aiResponse: AIMessage;
         let combinedContentFromStream = "";
         let firstChunkReceived = false;
@@ -317,12 +359,14 @@ export class ChatView extends ItemView {
 
             const currentToolCallsFromLlm = aiResponse.tool_calls;
             console.log(`[ChatView][${this.viewInstanceId}] LLM requested tool calls:`, currentToolCallsFromLlm);
+            callbacks.onDebugLog?.('ツール呼び出し', `LLMがツールを要求: ${currentToolCallsFromLlm.map(tc => tc.name).join(', ')}`);
             
             // ツール実行前に、現在のメッセージ表示要素 (ストリーミング途中だったもの) を一旦削除
             if (currentMessageDisplayElement && currentMessageDisplayElement.parentNode) {
                 currentMessageDisplayElement.remove();
                 currentMessageDisplayElement = null; 
             }
+            this.uiManager.showStatus('ツールを実行しています...');
             const toolExecutionNoticeEl = this.uiManager.appendMessage('ツールを実行しています...', 'loading');
 
             const toolMessages: ToolMessage[] = [];
@@ -345,6 +389,8 @@ export class ChatView extends ItemView {
                 if (toolToExecute) {
                     try {
                         console.log(`[ChatView][${this.viewInstanceId}] Executing tool: ${toolName} with args:`, toolArgs);
+                        this.uiManager.showStatus(`ツール「${toolName}」を実行中...`);
+                        callbacks.onDebugLog?.('ツール実行', `${toolName} 実行中`, JSON.stringify(toolArgs, null, 2));
                         const result = await toolToExecute.invoke(toolArgs);
                         toolMessages.push(new ToolMessage({
                             tool_call_id: toolCallId,
@@ -352,6 +398,7 @@ export class ChatView extends ItemView {
                             content: result 
                         }));
                         console.log(`[ChatView][${this.viewInstanceId}] Tool ${toolName} executed. Result:`, result);
+                        callbacks.onDebugLog?.('ツール結果', `${toolName} 完了`, String(result).substring(0, 500));
                         // ツール実行結果をUIに表示 (オプション)
                         this.uiManager.appendModelMessage(`ツール「${toolName}」を実行しました。結果:\n${String(result).substring(0,150)}...`);
 
@@ -376,9 +423,14 @@ export class ChatView extends ItemView {
             messagesForLlm.push(...toolMessages);
             
             // 次のLLM呼び出しのために、新しいローディングメッセージ要素を準備
+            this.uiManager.showStatus('応答を生成しています...');
             currentMessageDisplayElement = this.uiManager.appendMessage('LLMの応答を待っています...', 'loading');
             firstChunkReceived = false; // リセット
         } // End of while(true) loop
+
+        // ステータスインジケーターを非表示
+        this.uiManager.hideStatus();
+        callbacks.onDebugLog?.('完了', '応答生成完了');
 
         const finalContentToDisplay = typeof aiResponse.content === 'string' ? aiResponse.content : combinedContentFromStream;
 
@@ -413,6 +465,8 @@ export class ChatView extends ItemView {
 
     } catch (error: any) {
         console.error(`[ChatView][${this.viewInstanceId}] Error sending message or processing tools:`, error.message, error.stack);
+        this.uiManager.hideStatus();
+        callbacks.onDebugLog?.('エラー', `処理中にエラー発生: ${error.message}`);
         // エラー発生時は、表示されている可能性のあるメッセージ要素をクリーンアップ
         if (initialLoadingMessageEl && initialLoadingMessageEl.parentNode) initialLoadingMessageEl.remove();
         if (currentMessageDisplayElement && currentMessageDisplayElement !== initialLoadingMessageEl && currentMessageDisplayElement.parentNode) {

@@ -202,6 +202,34 @@ export interface TodoItem {
   raw: string; // 元のMarkdown行
 }
 
+// --- EmbeddingStore で使用する型定義 ---
+export interface EmbeddingEntry {
+  filePath: string;
+  sourceType: 'TPN' | 'SN';
+  contentHash: string;
+  embedding: number[];
+  title?: string;
+  tags?: string[];
+  updatedAt: string;
+}
+
+export interface EmbeddingIndex {
+  version: number;
+  model: string;
+  entries: Record<string, EmbeddingEntry>;
+}
+
+// --- Processing Callbacks ---
+/**
+ * 処理の進捗やデバッグ情報を伝達するためのコールバック型定義
+ */
+export interface ProcessingCallbacks {
+  /** 現在の処理フェーズを表示する（UIのステータスインジケーター用） */
+  onProgress?: (phase: string) => void;
+  /** デバッグログエントリを追加する（デバッグパネル用） */
+  onDebugLog?: (category: string, message: string, data?: string) => void;
+}
+
 // TodoToolInput と TodoActionParams は Zod スキーマから型推論されるため、
 // src/tools/todoTool.ts 内で z.infer を使って定義されます。
 // もし他の場所でこれらの型が必要な場合は、todoTool.ts からエクスポートしてインポートします。

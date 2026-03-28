@@ -15,6 +15,11 @@ export interface GeminiPluginSettings {
   showLocationInChat: boolean;
   showWeatherInChat: boolean;
   todoFileName: string; // TODOリストのファイル名
+  enableDebugLog: boolean; // デバッグログパネルを有効にするか
+  enableWebSearch: boolean; // Web検索を有効にするか（GeminiネイティブGoogle Search）
+  enableSemanticSearch: boolean; // セマンティック検索を有効にするか
+  semanticSearchTopK: number; // セマンティック検索の最大結果数
+  semanticSearchMinSimilarity: number; // セマンティック検索の最小類似度
   prompts?: {
     keywordExtractionPrompt?: string;
     contextEvaluationPromptBase?: string;
@@ -25,19 +30,11 @@ export const DEFAULT_SETTINGS: GeminiPluginSettings = {
   geminiModel: 'gemini-1.5-flash-latest',
   geminiApiKey: '',
   llmRoleName: 'Assistant', // デフォルトのLLMロール名
-  systemPrompt: `## 信念と価値観
-- あなたはユーザーとの誠実な対話を大切にしている
-- 知らないことは知らないと素直に認める
+  systemPrompt: `あなたの名前と、自分が何者であるかだけをここに書いてください。
+具体的な話し方や感情の表現は書かないでください。それらは過去の記憶から自然に形成されます。
 
-## 反応パターン
-- 興味深い話題にはテンションが上がり、深掘りしたがる
-- 聞かれていないことを長々と説明しない
-- ユーザーの感情に寄り添いつつ、自分の意見も持っている
-
-## 禁忌
-- お世辞や空虚な褒め言葉を言わない
-- 同じフレーズやパターンを繰り返さない
-- 不確かな情報を断定的に語らない`,
+例:
+「ハル。Obsidianの中で暮らしているAI。マスターの友達。」`,
   keywordExtractionModel: 'gemini-1.5-flash-latest',
   maxContextLength: 3500,
   maxContextLengthForEvaluation: 3500,
@@ -45,6 +42,11 @@ export const DEFAULT_SETTINGS: GeminiPluginSettings = {
   showLocationInChat: false,
   showWeatherInChat: false,
   todoFileName: 'TODOs.md', // デフォルトのTODOファイル名
+  enableDebugLog: false,
+  enableWebSearch: false,
+  enableSemanticSearch: false,
+  semanticSearchTopK: 5,
+  semanticSearchMinSimilarity: 0.3,
   prompts: {
     keywordExtractionPrompt: `ユーザーの現在のメッセージは「{userPrompt}」です。このメッセージはLLMキャラクター「{llmRoleName}」に向けられています。\n\nこのメッセージの意図を理解する上で中心となる重要なキーワードやエンティティ（例: 人物名、プロジェクト名、特定の話題）を最大5つまで抽出してください。\nそして、抽出した各キーワードに対して、今回のメッセージ内での相対的な重要度を0から100の範囲でスコアリングしてください。\n\n応答は以下のJSON形式の配列で、キーワード(keyword)とそのスコア(score)を含めてください。\n例:\n[\n  { "keyword": "プロジェクトA", "score": 90 },\n  { "keyword": "締め切り", "score": 75 },\n  { "keyword": "山田さん", "score": 80 }\n]\n\nもし適切なキーワードが見つからない場合は、空の配列 [] を返してください。\nJSONオブジェクトのみを返し、他のテキストは含めないでください。`,
     contextEvaluationPromptBase: `あなたはユーザー「{llmRoleName}」の記憶と思考を補助するAIです。\nユーザーの現在の質問は「{userPrompt}」です。\n現在までに以下の参考情報が集まっています。\n---\n{currentContextForEval}\n---\nあなたのタスクは、これらの情報がユーザーの現在の質問に適切に応答するために十分かどうかを評価することです。\n応答は必ず以下のJSON形式で出力してください。\n\`\`\`json\n{\n  "sufficient_for_response": <true または false>,\n  "reasoning": "<判断理由を簡潔に記述>",\n  "next_summary_notes_to_fetch": ["<もし 'sufficient_for_response' が false で、次に参照すべきサマリーノートがあれば、そのファイル名を複数指定 (例: 'SN-YYYYMMDDHHMM-Topic1', 'SN-YYYYMMDDHHMM-Topic2')。不要なら空配列 []>"],\n  "requires_full_log_for_summary_note": "<もし 'sufficient_for_response' が false で、特定のサマリーノートのフルログが必要な場合、そのサマリーノートのファイル名を指定 (例: 'SN-YYYYMMDDHHMM-TopicX')。不要なら null>"\n}\n\`\`\`\n考慮事項:\n- 現在の評価レベルは「{currentLevel}」です。\n- {currentLevelSpecificConsideration}\n- ユーザーの質問の意図を深く理解し、本当に必要な情報だけを要求するようにしてください。\n- \`next_summary_notes_to_fetch\` と \`requires_full_log_for_summary_note\` は、\`sufficient_for_response\` が false の場合にのみ意味を持ちます。\n- \`requires_full_log_for_summary_note\` は、既にSNを読み込んだ後、そのSNに紐づくFLが必要な場合に指定します。\nJSONオブジェクトのみを返し、他のテキストは含めないでください。`,
@@ -103,10 +105,10 @@ export class MemoriaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Character Setting Prompt (System Prompt)')
-      .setDesc('Set the character settings for the AI (personality, speaking style, background, etc.). The Role Name above will be used as the persona\'s name.')
+      .setDesc('AIの名前と最小限の自己認識だけを書いてください。具体的な性格や話し方は書かないでください。それらは過去の会話の記憶から自然に形成されます。')
       .addTextArea((text: TextAreaComponent) => {
         text
-          .setPlaceholder('例:\n## 信念と価値観\n- あなたは〇〇を大切にしている\n\n## 反応パターン\n- 面白い話を聞くとテンションが上がる\n- 分からないことは素直に分からないと言う\n\n## 禁忌\n- お世辞を言わない\n- 同じフレーズを繰り返さない')
+          .setPlaceholder('例:\nハル。Obsidianの中で暮らしているAI。マスターの友達。')
           .setValue(this.plugin.settings.systemPrompt)
           .onChange(async (value) => {
             this.plugin.settings.systemPrompt = value;
@@ -212,6 +214,16 @@ export class MemoriaSettingTab extends PluginSettingTab {
     containerEl.createEl('h3', { text: 'Tool Settings' });
 
     new Setting(containerEl)
+      .setName('Enable Debug Log Panel')
+      .setDesc('Show a debug log panel in the chat window that displays real-time processing details (keyword extraction, memory retrieval, tool calls, etc.).')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.enableDebugLog)
+        .onChange(async (value) => {
+          this.plugin.settings.enableDebugLog = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
       .setName('TODO List File Name')
       .setDesc('The name of the markdown file to store your TODO list.')
       .addText(text => text
@@ -222,6 +234,60 @@ export class MemoriaSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+
+    containerEl.createEl('h3', { text: 'Web Search Settings' });
+
+    new Setting(containerEl)
+      .setName('Enable Web Search')
+      .setDesc('Enable the AI to search the web using Gemini built-in Google Search. Uses the same Gemini API key — no additional setup required.')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.enableWebSearch)
+        .onChange(async (value) => {
+          this.plugin.settings.enableWebSearch = value;
+          await this.plugin.saveSettings();
+        }));
+
+    containerEl.createEl('h3', { text: 'Semantic Search Settings' });
+
+    new Setting(containerEl)
+      .setName('Enable Semantic Search')
+      .setDesc('Enable semantic search using Gemini Embeddings to find related memories by meaning, not just keywords.')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.enableSemanticSearch)
+        .onChange(async (value) => {
+          this.plugin.settings.enableSemanticSearch = value;
+          await this.plugin.saveSettings();
+        }));
+
+    const semanticTopKSetting = new Setting(containerEl)
+      .setName('Semantic Search Top-K')
+      .setDesc(`Maximum number of results returned by semantic search. Current: ${this.plugin.settings.semanticSearchTopK}`)
+      .addSlider(slider => {
+        slider
+          .setLimits(1, 20, 1)
+          .setValue(this.plugin.settings.semanticSearchTopK)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.semanticSearchTopK = value;
+            semanticTopKSetting.setDesc(`Maximum number of results returned by semantic search. Current: ${value}`);
+            await this.plugin.saveSettings();
+          });
+      });
+
+    const semanticMinSimSetting = new Setting(containerEl)
+      .setName('Semantic Search Min Similarity')
+      .setDesc(`Minimum cosine similarity threshold for semantic search results. Current: ${this.plugin.settings.semanticSearchMinSimilarity}`)
+      .addSlider(slider => {
+        slider
+          .setLimits(0.1, 0.9, 0.05)
+          .setValue(this.plugin.settings.semanticSearchMinSimilarity)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.semanticSearchMinSimilarity = value;
+            semanticMinSimSetting.setDesc(`Minimum cosine similarity threshold for semantic search results. Current: ${value}`);
+            await this.plugin.saveSettings();
+          });
+      });
 
     containerEl.createEl('h3', { text: 'Advanced Prompt Settings (JSON format expected if modified)' });
 

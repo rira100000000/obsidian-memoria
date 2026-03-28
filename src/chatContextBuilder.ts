@@ -2,7 +2,7 @@
 import { moment } from 'obsidian';
 import { ContextRetriever, RetrievedContext } from './contextRetriever';
 import { LocationFetcher } from './locationFetcher';
-import { CurrentContextualInfo } from './types';
+import { CurrentContextualInfo, ProcessingCallbacks } from './types';
 import { BaseMessage } from "@langchain/core/messages";
 import { GeminiPluginSettings } from './settings';
 import { ContextLayout, DEFAULT_LAYOUT, calculateBudget, fitWithinBudget } from './contextLayout';
@@ -66,18 +66,21 @@ export class ChatContextBuilder {
     llmRoleName: string,
     chatHistory: BaseMessage[],
     isFirstActualUserMessage: boolean,
-    narrativeBuffer?: NarrativeBuffer
+    narrativeBuffer?: NarrativeBuffer,
+    callbacks?: ProcessingCallbacks
   ): Promise<LlmContextInput> {
     // レイアウトに基づくバジェットの計算
     const totalBudget = this.settings.maxContextLength || 100000;
     const budget = calculateBudget(totalBudget, this.layout);
 
     let retrievedContextString = "記憶からの関連情報は見つかりませんでした。";
+    callbacks?.onProgress?.('記憶を検索しています...');
     try {
       const retrievedContextResult: RetrievedContext = await this.contextRetriever.retrieveContextForPrompt(
         userInput,
         llmRoleName,
-        chatHistory
+        chatHistory,
+        callbacks
       );
       if (retrievedContextResult.llmContextPrompt && retrievedContextResult.llmContextPrompt.trim() !== "") {
         retrievedContextString = fitWithinBudget(retrievedContextResult.llmContextPrompt, budget.memory);
@@ -103,6 +106,7 @@ export class ChatContextBuilder {
     let currentWeatherString = "天気情報の取得に失敗しました。";
 
     if (isFirstActualUserMessage) {
+      callbacks?.onProgress?.('位置情報・天気情報を取得しています...');
       try {
         const contextualInfo: CurrentContextualInfo | null = await this.locationFetcher.fetchCurrentContextualInfo();
         if (contextualInfo) {
