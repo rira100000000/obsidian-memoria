@@ -75,49 +75,50 @@ export class ChatSessionManager {
         console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Initiating reset. SkipReflection: ${skipSummaryAndReflection}, LogPath: '${previousLogPath}', MessagesCount: ${previousMessages.length}`);
 
         try {
-            if (!skipSummaryAndReflection && previousLogPath && previousMessages.length > 1) {
+            // AIがツール呼び出しで既に振り返りを作成済みならスキップ
+            const alreadyReflected = this.reflectionTool.getLastCreatedFile() !== null;
+            if (alreadyReflected) {
+                console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Reflection already created during conversation. Skipping.`);
+                this.uiManager.addDebugLogEntry('振り返り', `会話中にAIが振り返りノートを作成済み（${this.reflectionTool.getLastCreatedFile()?.basename}）。再生成をスキップ`);
+            }
+
+            if (!skipSummaryAndReflection && !alreadyReflected && previousLogPath && previousMessages.length > 1) {
                 console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Conditions met for reflection. Calling reflectionTool.generateAndSaveReflection...`);
-                
-                // reflectionTool.generateAndSaveReflection の呼び出し前のNoticeは削除し、Tool内部のNoticeに統一
-                // new Notice(`${previousLlmRoleName}が会話の振り返り(サマリー)を作成中です...`, 4000); 
-                
+                this.uiManager.addDebugLogEntry('振り返り', `振り返りノート生成を開始 (メッセージ数: ${previousMessages.length})`);
+
                 const reflectionNoteFile = await this.reflectionTool.generateAndSaveReflection(
                     previousMessages,
                     previousLlmRoleName,
                     previousLogPath.split('/').pop() || "unknown-log.md"
                 );
 
-                console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] reflectionTool.generateAndSaveReflection FINISHED. Returned:`, reflectionNoteFile);
-                console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Type of reflectionNoteFile: ${typeof reflectionNoteFile}`);
-
                 if (reflectionNoteFile instanceof TFile) {
-                    console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Reflection note is a TFile. Path: ${reflectionNoteFile.path}`);
-                    console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Displaying Notice: Reflection and summary note generated: ${reflectionNoteFile.basename}`);
-                    new Notice(`Reflection and summary note generated: ${reflectionNoteFile.basename}`); // ChatSessionManagerからの成功通知
+                    this.uiManager.addDebugLogEntry('振り返り', `振り返りノート作成完了: ${reflectionNoteFile.basename}`);
+                    new Notice(`Reflection and summary note generated: ${reflectionNoteFile.basename}`);
                     await this.chatLogger.updateLogFileFrontmatter(previousLogPath, {
                         title: reflectionNoteFile.basename.replace(/\.md$/, '').replace(/^SN-\d{12}-/, ''),
                         summary_note: `[[${reflectionNoteFile.name}]]`
                     });
                 } else if (typeof reflectionNoteFile === 'string' && reflectionNoteFile.startsWith("エラー:")) {
-                    console.warn(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Reflection tool returned an error string: ${reflectionNoteFile}`);
-                    console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Displaying Notice (from error string): ${reflectionNoteFile}`);
-                    new Notice(reflectionNoteFile); // ReflectionToolからのエラーメッセージをそのまま表示
+                    this.uiManager.addDebugLogEntry('振り返り', `振り返りエラー: ${reflectionNoteFile}`);
+                    new Notice(reflectionNoteFile);
                 } else {
-                    console.warn(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Reflection note generation failed or did not return a TFile or expected error string. Returned: ${reflectionNoteFile}`);
-                    console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Displaying Notice: 振り返り兼サマリーノートの生成に失敗しました。(Unexpected return)`);
+                    this.uiManager.addDebugLogEntry('振り返り', `振り返りノート生成失敗（予期しない戻り値）`);
                     new Notice(`振り返り兼サマリーノートの生成に失敗しました。(Unexpected return)`);
                 }
-            } else {
-                console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Conditions NOT met for reflection and summary generation. Details:`);
-                if (skipSummaryAndReflection) console.log(" - Reason: Reflection was explicitly skipped.");
-                if (!previousLogPath) console.log(" - Reason: previousLogPath is null or empty.");
-                if (!(previousMessages.length > 1)) console.log(` - Reason: previousMessages.length is ${previousMessages.length}, not > 1.`);
+            } else if (!alreadyReflected) {
+                let reason = '';
+                if (skipSummaryAndReflection) reason = '明示的にスキップ';
+                else if (!previousLogPath) reason = 'ログファイルなし';
+                else if (previousMessages.length <= 1) reason = `メッセージ数不足 (${previousMessages.length})`;
+                this.uiManager.addDebugLogEntry('振り返り', `振り返り生成条件を満たさず: ${reason}`);
             }
 
-            console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Resetting chatLogger, messageHistory, and narrativeBuffer...`);
+            console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Resetting chatLogger, messageHistory, narrativeBuffer, and reflectionTool state...`);
             this.chatLogger.resetLogFile();
             this.messageHistory = new InMemoryChatMessageHistory();
             this.narrativeBuffer.reset();
+            this.reflectionTool.clearLastCreatedFile();
 
             this.uiManager.clearMessages();
             this.uiManager.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');

@@ -93,30 +93,40 @@ export class TagProfiler {
     const llmRoleName = this.settings.llmRoleName || DEFAULT_SETTINGS.llmRoleName;
     const characterSettings = this.settings.systemPrompt || DEFAULT_SETTINGS.systemPrompt;
 
-    const processingPromises = tags.map((tag: string) =>
-      this.updateTagProfileForTag(
-        tag,
-        summaryNoteFile,
-        summaryNoteContent,
-        noteFrontmatter,
-        tagScores,
-        noteLanguage,
-        llmRoleName,
-        characterSettings
-      ).catch(err => {
-          console.error(`[TagProfiler] Error processing tag "${tag}" for ${summaryNoteFile.name}:`, err);
-        })
-    );
-
-    try {
-      await Promise.all(processingPromises);
-      await this.saveTagScores(tagScores);
-      new Notice('全てのタグプロファイリング処理が完了しました。');
-      console.log(`[TagProfiler] All tag profiling processes completed for ${summaryNoteFile.name}.`);
-    } catch (error) {
-      console.error('[TagProfiler] Unexpected error during Promise.all for tag processing:', error);
-      new Notice('タグプロファイリング処理中に予期せぬエラーが発生しました。');
+    // タグを制御された並列で処理（同時実行数を制限してレート制限を回避）
+    const CONCURRENCY = 3;
+    const failedTags: string[] = [];
+    for (let i = 0; i < tags.length; i += CONCURRENCY) {
+      const batch = tags.slice(i, i + CONCURRENCY);
+      const results = await Promise.allSettled(
+        batch.map((tag: string) =>
+          this.updateTagProfileForTag(
+            tag,
+            summaryNoteFile,
+            summaryNoteContent,
+            noteFrontmatter,
+            tagScores,
+            noteLanguage,
+            llmRoleName,
+            characterSettings
+          )
+        )
+      );
+      for (let j = 0; j < results.length; j++) {
+        if (results[j].status === 'rejected') {
+          console.error(`[TagProfiler] Error processing tag "${batch[j]}" for ${summaryNoteFile.name}:`, (results[j] as PromiseRejectedResult).reason);
+          failedTags.push(batch[j]);
+        }
+      }
     }
+
+    await this.saveTagScores(tagScores);
+    if (failedTags.length > 0) {
+      new Notice(`タグプロファイリング完了（${failedTags.length}件失敗: ${failedTags.join(', ')}）`);
+    } else {
+      new Notice('全てのタグプロファイリング処理が完了しました。');
+    }
+    console.log(`[TagProfiler] Tag profiling completed for ${summaryNoteFile.name}. Failed: ${failedTags.length}/${tags.length}`);
   }
 
   private async ensureDirectoryExists(dirPath: string): Promise<void> {
@@ -321,7 +331,6 @@ export class TagProfiler {
       console.log(`[TagProfiler] Received LLM response for tag "${tagName}".`);
     } catch (error: any) {
       console.error(`[TagProfiler] Error calling LLM for tag "${tagName}":`, error.message, error.stack);
-      new Notice(`タグ「${tagName}」のプロファイル生成中にLLMエラーが発生しました。`);
       return;
     }
 
@@ -337,7 +346,6 @@ export class TagProfiler {
       console.log(`[TagProfiler] Successfully parsed LLM response for tag "${tagName}".`);
     } catch (error: any) {
       console.error(`[TagProfiler] Error parsing LLM JSON response for tag "${tagName}":`, error.message, "\nLLM Response:\n", llmResponseText);
-      new Notice(`タグ「${tagName}」のLLM応答解析に失敗しました。詳細はコンソールを確認してください。`);
       return;
     }
 

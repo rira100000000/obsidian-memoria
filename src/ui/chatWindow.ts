@@ -157,6 +157,11 @@ export class ChatView extends ItemView {
     );
     this.uiManager.setDebugMode(this.settings.enableDebugLog ?? false);
 
+    // プラグイン全体からデバッグログUIにアクセス可能にする
+    this.plugin.debugLog = (category: string, message: string, data?: string) => {
+      this.uiManager.addDebugLogEntry(category, message, data);
+    };
+
     this.chatSessionManager = new ChatSessionManager(
         this.app,
         this.plugin,
@@ -361,10 +366,16 @@ export class ChatView extends ItemView {
             console.log(`[ChatView][${this.viewInstanceId}] LLM requested tool calls:`, currentToolCallsFromLlm);
             callbacks.onDebugLog?.('ツール呼び出し', `LLMがツールを要求: ${currentToolCallsFromLlm.map(tc => tc.name).join(', ')}`);
             
-            // ツール実行前に、現在のメッセージ表示要素 (ストリーミング途中だったもの) を一旦削除
+            // ツール実行前: AIが発したテキスト（「調べてみるね」等）があれば残す
             if (currentMessageDisplayElement && currentMessageDisplayElement.parentNode) {
-                currentMessageDisplayElement.remove();
-                currentMessageDisplayElement = null; 
+                const streamedText = currentMessageDisplayElement.textContent?.trim();
+                if (streamedText && streamedText !== '応答を待っています...' && streamedText !== 'LLMの応答を待っています...') {
+                    // AIのテキストはそのまま表示を維持
+                    currentMessageDisplayElement.classList.remove('loading');
+                } else {
+                    currentMessageDisplayElement.remove();
+                }
+                currentMessageDisplayElement = null;
             }
             this.uiManager.showStatus('ツールを実行しています...');
             const toolExecutionNoticeEl = this.uiManager.appendMessage('ツールを実行しています...', 'loading');
@@ -399,8 +410,6 @@ export class ChatView extends ItemView {
                         }));
                         console.log(`[ChatView][${this.viewInstanceId}] Tool ${toolName} executed. Result:`, result);
                         callbacks.onDebugLog?.('ツール結果', `${toolName} 完了`, String(result).substring(0, 500));
-                        // ツール実行結果をUIに表示 (オプション)
-                        this.uiManager.appendModelMessage(`ツール「${toolName}」を実行しました。結果:\n${String(result).substring(0,150)}...`);
 
                     } catch (toolError: any) {
                         console.error(`[ChatView][${this.viewInstanceId}] Error executing tool ${toolName}:`, toolError);

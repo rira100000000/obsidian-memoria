@@ -12,6 +12,9 @@ export default class ObsidianMemoria extends Plugin {
   toolManager: ToolManager; // ToolManagerのインスタンスを保持
   embeddingStore: EmbeddingStore; // EmbeddingStoreのインスタンスを保持
 
+  /** デバッグログをUIに送るためのコールバック（ChatViewが設定する） */
+  debugLog?: (category: string, message: string, data?: string) => void;
+
   async onload() {
     console.log('Loading Obsidian Memoria Plugin');
 
