@@ -5,6 +5,13 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+.memoria-chat-view-container * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
 }
 
 .memoria-chat-header {
@@ -52,6 +59,9 @@
   background-color: var(--interactive-accent);
   color: var(--text-on-accent);
   align-self: flex-end;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text;
 }
 
 .model-message {

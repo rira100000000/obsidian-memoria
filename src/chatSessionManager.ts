@@ -75,38 +75,37 @@ export class ChatSessionManager {
         console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Initiating reset. SkipReflection: ${skipSummaryAndReflection}, LogPath: '${previousLogPath}', MessagesCount: ${previousMessages.length}`);
 
         try {
-            // AIがツール呼び出しで既に振り返りを作成済みならスキップ
+            // 振り返り処理をバックグラウンドで実行（UIリセットをブロックしない）
             const alreadyReflected = this.reflectionTool.getLastCreatedFile() !== null;
             if (alreadyReflected) {
-                console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Reflection already created during conversation. Skipping.`);
                 this.uiManager.addDebugLogEntry('振り返り', `会話中にAIが振り返りノートを作成済み（${this.reflectionTool.getLastCreatedFile()?.basename}）。再生成をスキップ`);
-            }
+            } else if (!skipSummaryAndReflection && previousLogPath && previousMessages.length > 1) {
+                this.uiManager.addDebugLogEntry('振り返り', `振り返りノート生成をバックグラウンドで開始 (メッセージ数: ${previousMessages.length})`);
 
-            if (!skipSummaryAndReflection && !alreadyReflected && previousLogPath && previousMessages.length > 1) {
-                console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Conditions met for reflection. Calling reflectionTool.generateAndSaveReflection...`);
-                this.uiManager.addDebugLogEntry('振り返り', `振り返りノート生成を開始 (メッセージ数: ${previousMessages.length})`);
-
-                const reflectionNoteFile = await this.reflectionTool.generateAndSaveReflection(
+                // バックグラウンドで振り返り処理を実行（chatLoggerはリセット前にパスを保存）
+                const logPathForReflection = previousLogPath;
+                const chatLoggerForReflection = this.chatLogger;
+                this.reflectionTool.generateAndSaveReflection(
                     previousMessages,
                     previousLlmRoleName,
-                    previousLogPath.split('/').pop() || "unknown-log.md"
-                );
-
-                if (reflectionNoteFile instanceof TFile) {
-                    this.uiManager.addDebugLogEntry('振り返り', `振り返りノート作成完了: ${reflectionNoteFile.basename}`);
-                    new Notice(`Reflection and summary note generated: ${reflectionNoteFile.basename}`);
-                    await this.chatLogger.updateLogFileFrontmatter(previousLogPath, {
-                        title: reflectionNoteFile.basename.replace(/\.md$/, '').replace(/^SN-\d{12}-/, ''),
-                        summary_note: `[[${reflectionNoteFile.name}]]`
-                    });
-                } else if (typeof reflectionNoteFile === 'string' && reflectionNoteFile.startsWith("エラー:")) {
-                    this.uiManager.addDebugLogEntry('振り返り', `振り返りエラー: ${reflectionNoteFile}`);
-                    new Notice(reflectionNoteFile);
-                } else {
-                    this.uiManager.addDebugLogEntry('振り返り', `振り返りノート生成失敗（予期しない戻り値）`);
-                    new Notice(`振り返り兼サマリーノートの生成に失敗しました。(Unexpected return)`);
-                }
-            } else if (!alreadyReflected) {
+                    logPathForReflection.split('/').pop() || "unknown-log.md"
+                ).then(async (reflectionNoteFile) => {
+                    if (reflectionNoteFile instanceof TFile) {
+                        this.uiManager.addDebugLogEntry('振り返り', `振り返りノート作成完了: ${reflectionNoteFile.basename}`);
+                        new Notice(`振り返りノートが作成されました: ${reflectionNoteFile.basename}`);
+                        await chatLoggerForReflection.updateLogFileFrontmatter(logPathForReflection, {
+                            title: reflectionNoteFile.basename.replace(/\.md$/, '').replace(/^SN-\d{12}-/, ''),
+                            summary_note: `[[${reflectionNoteFile.name}]]`
+                        });
+                    } else if (typeof reflectionNoteFile === 'string' && reflectionNoteFile.startsWith("エラー:")) {
+                        this.uiManager.addDebugLogEntry('振り返り', `振り返りエラー: ${reflectionNoteFile}`);
+                        new Notice(reflectionNoteFile);
+                    }
+                }).catch((error: any) => {
+                    console.error(`[ChatSessionManager] Background reflection failed:`, error);
+                    this.uiManager.addDebugLogEntry('振り返り', `バックグラウンド振り返りエラー: ${error.message}`);
+                });
+            } else {
                 let reason = '';
                 if (skipSummaryAndReflection) reason = '明示的にスキップ';
                 else if (!previousLogPath) reason = 'ログファイルなし';
@@ -114,7 +113,7 @@ export class ChatSessionManager {
                 this.uiManager.addDebugLogEntry('振り返り', `振り返り生成条件を満たさず: ${reason}`);
             }
 
-            console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Resetting chatLogger, messageHistory, narrativeBuffer, and reflectionTool state...`);
+            // UIは即座にリセット
             this.chatLogger.resetLogFile();
             this.messageHistory = new InMemoryChatMessageHistory();
             this.narrativeBuffer.reset();
@@ -125,19 +124,12 @@ export class ChatSessionManager {
             this.uiManager.resetInputField();
             this.uiManager.scrollToBottom();
 
-            console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Chat has been reset.`);
-
-            if (!skipSummaryAndReflection && previousMessages.length > 1 && previousLogPath && (await this.messageHistory.getMessages()).length === 0) { // 最後の条件はリセット成功確認
-                 console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Displaying Notice: 新しいチャットが開始されました。`);
-                new Notice('新しいチャットが開始されました。');
-            }
+            console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Chat has been reset. Reflection running in background.`);
         } catch (error: any) {
             console.error(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] UNEXPECTED ERROR in resetChat:`, error, error.stack);
-            console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] Displaying Notice: チャットリセット中に予期せぬエラーが発生しました。`);
-            new Notice(`チャットリセット中に予期せぬエラーが発生しました。詳細はコンソールを確認してください。`);
+            new Notice(`チャットリセット中に予期せぬエラーが発生しました。`);
         } finally {
             this.isResetting = false;
-            console.log(`[ChatSessionManager][${this.managerInstanceId}][ResetCall-${resetCallId}] isResetting SET to false in finally block. Reset process finished.`);
         }
     }
 

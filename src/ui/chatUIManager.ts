@@ -138,6 +138,10 @@ export class ChatUIManager {
         cls: `memoria-chat-message ${type}-message ${type === 'loading' ? 'loading' : ''}`
     });
     messageEl.setText(message); // XSS対策のためtextContentではなくsetTextを使用
+    // Obsidianが祖先要素でuser-selectをブロックするため、インラインで強制設定
+    messageEl.style.userSelect = 'text';
+    messageEl.style.webkitUserSelect = 'text';
+    messageEl.style.cursor = 'text';
     this.scrollToBottom();
     return messageEl;
   }

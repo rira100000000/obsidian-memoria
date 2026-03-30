@@ -247,6 +247,24 @@ export class ContextRetriever {
 
   // --- Formatting ---
 
+  /**
+   * 日時文字列から現在までの経過時間を人間が読める形式で返す。
+   */
+  private formatTimeAgo(dateStr: string): string {
+    const then = moment(dateStr, ["YYYY-MM-DD HH:mm:ss", "YYYY-MM-DD HH:MM"]);
+    if (!then.isValid()) return '';
+    const now = moment();
+    const diffMinutes = now.diff(then, 'minutes');
+    if (diffMinutes < 1) return 'たった今';
+    if (diffMinutes < 60) return `${diffMinutes}分前`;
+    const diffHours = now.diff(then, 'hours');
+    if (diffHours < 24) return `${diffHours}時間前`;
+    const diffDays = now.diff(then, 'days');
+    if (diffDays < 30) return `${diffDays}日前`;
+    const diffMonths = now.diff(then, 'months');
+    return `${diffMonths}ヶ月前`;
+  }
+
   private formatContextForFinalLlm(items: RetrievedContextItem[], userPrompt: string): string {
     if (items.length === 0) return "記憶からの関連情報は見つかりませんでした。";
 
@@ -254,7 +272,9 @@ export class ContextRetriever {
     const sortedItems = [...items].sort((a, b) => (b.relevance || 0) - (a.relevance || 0));
 
     for (const item of sortedItems) {
-      contextString += `\n[参照元: ${item.sourceType} - ${item.sourceName} (${item.date || '日付不明'})]\n`;
+      const timeAgo = item.date ? this.formatTimeAgo(item.date) : '';
+      const timeLabel = timeAgo ? ` [${timeAgo}の会話]` : '';
+      contextString += `\n[参照元: ${item.sourceType} - ${item.sourceName} (${item.date || '日付不明'})${timeLabel}]\n`;
       if (item.title) contextString += `タイトル: ${item.title}\n`;
       contextString += `内容抜粋:\n${item.contentSnippet}\n---\n`;
     }
