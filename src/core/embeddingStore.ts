@@ -1,8 +1,8 @@
 // src/embeddingStore.ts
-import { App, TFile, Notice, parseYaml } from 'obsidian';
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import ObsidianMemoria from '../main';
-import { GeminiPluginSettings } from './settings';
+import { parse as parseYaml } from 'yaml';
+import { StorageAdapter } from './interfaces/storageAdapter';
+import { LLMAdapter } from './interfaces/llmAdapter';
+import { NotificationAdapter } from './interfaces/notificationAdapter';
 import { EmbeddingEntry, EmbeddingIndex } from './types';
 
 const EMBEDDING_INDEX_FILE = 'embedding_index.json';
@@ -11,44 +11,22 @@ const SN_DIR = 'SummaryNote';
 const EMBEDDING_MODEL = 'gemini-embedding-001';
 
 export class EmbeddingStore {
-  private app: App;
-  private plugin: ObsidianMemoria;
-  private settings: GeminiPluginSettings;
-  private genAI: GoogleGenerativeAI | null = null;
+  private storage: StorageAdapter;
+  private llm: LLMAdapter;
+  private enableSemanticSearch: boolean;
   private index: EmbeddingIndex;
+  private notify: NotificationAdapter;
 
-  constructor(plugin: ObsidianMemoria) {
-    this.plugin = plugin;
-    this.app = plugin.app;
-    this.settings = plugin.settings;
+  constructor(storage: StorageAdapter, llm: LLMAdapter, enableSemanticSearch: boolean, notify: NotificationAdapter) {
+    this.storage = storage;
+    this.llm = llm;
+    this.enableSemanticSearch = enableSemanticSearch;
+    this.notify = notify;
     this.index = { version: 1, model: EMBEDDING_MODEL, entries: {} };
-    this.initializeClient();
-  }
-
-  private initializeClient(): void {
-    if (!this.settings.geminiApiKey) {
-      console.warn("[EmbeddingStore] API key not set. Client not initialized.");
-      this.genAI = null;
-      return;
-    }
-    try {
-      this.genAI = new GoogleGenerativeAI(this.settings.geminiApiKey);
-      console.log(`[EmbeddingStore] Client initialized for model: ${EMBEDDING_MODEL}`);
-    } catch (e: any) {
-      console.error("[EmbeddingStore] Failed to initialize client:", e.message);
-      this.genAI = null;
-    }
   }
 
   private async callEmbedAPI(text: string): Promise<number[]> {
-    if (!this.genAI) throw new Error("Embedding client not initialized");
-
-    const model = this.genAI.getGenerativeModel(
-      { model: EMBEDDING_MODEL },
-      { apiVersion: "v1beta" }
-    );
-    const result = await model.embedContent(text);
-    return result.embedding.values;
+    return this.llm.embed(text);
   }
 
   public async initialize(): Promise<void> {
@@ -57,9 +35,9 @@ export class EmbeddingStore {
 
   private async load(): Promise<void> {
     try {
-      const exists = await this.app.vault.adapter.exists(EMBEDDING_INDEX_FILE);
+      const exists = await this.storage.exists(EMBEDDING_INDEX_FILE);
       if (exists) {
-        const content = await this.app.vault.adapter.read(EMBEDDING_INDEX_FILE);
+        const content = await this.storage.read(EMBEDDING_INDEX_FILE);
         const parsed = JSON.parse(content) as EmbeddingIndex;
         if (parsed.model === EMBEDDING_MODEL) {
           this.index = parsed;
@@ -78,7 +56,7 @@ export class EmbeddingStore {
   public async save(): Promise<void> {
     try {
       const content = JSON.stringify(this.index, null, 2);
-      await this.app.vault.adapter.write(EMBEDDING_INDEX_FILE, content);
+      await this.storage.write(EMBEDDING_INDEX_FILE, content);
       console.log(`[EmbeddingStore] Index saved with ${Object.keys(this.index.entries).length} entries.`);
     } catch (e: any) {
       console.error("[EmbeddingStore] Error saving index:", e.message);
@@ -101,7 +79,7 @@ export class EmbeddingStore {
     sourceType: 'TPN' | 'SN',
     metadata?: { title?: string; tags?: string[] }
   ): Promise<boolean> {
-    if (!this.genAI || !this.settings.enableSemanticSearch) {
+    if (!this.llm.isEmbeddingAvailable() || !this.enableSemanticSearch) {
       return false;
     }
 
@@ -133,7 +111,7 @@ export class EmbeddingStore {
   }
 
   public async embedQuery(text: string): Promise<number[] | null> {
-    if (!this.genAI) {
+    if (!this.llm.isEmbeddingAvailable()) {
       console.warn("[EmbeddingStore] Client not initialized for query.");
       return null;
     }
@@ -183,25 +161,25 @@ export class EmbeddingStore {
   }
 
   public async rebuildIndex(): Promise<number> {
-    if (!this.genAI) {
-      new Notice("Embedding APIが初期化されていません。APIキーを確認してください。");
+    if (!this.llm.isEmbeddingAvailable()) {
+      this.notify.info("Embedding APIが初期化されていません。APIキーを確認してください。");
       return 0;
     }
 
     console.log("[EmbeddingStore] Starting full index rebuild...");
-    new Notice("セマンティック検索インデックスの再構築を開始します...");
+    this.notify.info("セマンティック検索インデックスの再構築を開始します...");
     this.index.entries = {};
 
-    const filesToEmbed: Array<{ file: TFile; sourceType: 'TPN' | 'SN' }> = [];
+    const filesToEmbed: Array<{ filePath: string; sourceType: 'TPN' | 'SN' }> = [];
 
-    const tpnFiles = this.app.vault.getMarkdownFiles().filter(f => f.path.startsWith(TPN_DIR + '/'));
-    for (const file of tpnFiles) {
-      filesToEmbed.push({ file, sourceType: 'TPN' });
+    const tpnFiles = await this.storage.listMarkdownFiles(TPN_DIR);
+    for (const filePath of tpnFiles) {
+      filesToEmbed.push({ filePath, sourceType: 'TPN' });
     }
 
-    const snFiles = this.app.vault.getMarkdownFiles().filter(f => f.path.startsWith(SN_DIR + '/'));
-    for (const file of snFiles) {
-      filesToEmbed.push({ file, sourceType: 'SN' });
+    const snFiles = await this.storage.listMarkdownFiles(SN_DIR);
+    for (const filePath of snFiles) {
+      filesToEmbed.push({ filePath, sourceType: 'SN' });
     }
 
     console.log(`[EmbeddingStore] Found ${filesToEmbed.length} files to embed (${tpnFiles.length} TPN, ${snFiles.length} SN).`);
@@ -210,35 +188,37 @@ export class EmbeddingStore {
     let errorCount = 0;
 
     for (let i = 0; i < filesToEmbed.length; i++) {
-      const { file, sourceType } = filesToEmbed[i];
+      const { filePath, sourceType } = filesToEmbed[i];
       const success = await (async () => {
         try {
-          const content = await this.app.vault.cachedRead(file);
+          const content = await this.storage.read(filePath);
           const frontmatter = this.parseFrontmatter(content);
           const bodyContent = this.extractBody(content);
           if (!bodyContent || bodyContent.trim().length === 0) {
-            console.warn(`[EmbeddingStore] Empty body for ${file.path}, skipping.`);
+            console.warn(`[EmbeddingStore] Empty body for ${filePath}, skipping.`);
             return false;
           }
 
           const textToEmbed = this.prepareTextForEmbedding(bodyContent, frontmatter, sourceType);
-          console.log(`[EmbeddingStore] Embedding ${file.path} (${textToEmbed.length} chars)...`);
+          console.log(`[EmbeddingStore] Embedding ${filePath} (${textToEmbed.length} chars)...`);
           const embedding = await this.callEmbedAPI(textToEmbed);
           const contentHash = this.computeContentHash(textToEmbed);
 
-          this.index.entries[file.path] = {
-            filePath: file.path,
+          const baseName = filePath.replace(/^.*\//, '').replace(/\.md$/, '');
+          this.index.entries[filePath] = {
+            filePath,
             sourceType,
             contentHash,
             embedding,
-            title: frontmatter?.title || frontmatter?.tag_name || file.basename,
+            title: frontmatter?.title || frontmatter?.tag_name || baseName,
             tags: frontmatter?.tags || (frontmatter?.tag_name ? [frontmatter.tag_name] : []),
             updatedAt: new Date().toISOString(),
           };
           return true;
         } catch (e: any) {
-          console.error(`[EmbeddingStore] Error embedding ${file.path}:`, e.message, e.stack);
-          new Notice(`Embedding失敗: ${file.basename} - ${e.message}`);
+          console.error(`[EmbeddingStore] Error embedding ${filePath}:`, e.message, e.stack);
+          const baseName = filePath.replace(/^.*\//, '').replace(/\.md$/, '');
+          this.notify.info(`Embedding失敗: ${baseName} - ${e.message}`);
           return false;
         }
       })();
@@ -248,14 +228,14 @@ export class EmbeddingStore {
         errorCount++;
       }
       if ((i + 1) % 5 === 0 || i === filesToEmbed.length - 1) {
-        new Notice(`インデックス構築中... ${i + 1}/${filesToEmbed.length} 件処理済み (成功: ${embedded}, 失敗: ${errorCount})`);
+        this.notify.info(`インデックス構築中... ${i + 1}/${filesToEmbed.length} 件処理済み (成功: ${embedded}, 失敗: ${errorCount})`);
       }
     }
 
     await this.save();
     const msg = `セマンティック検索インデックスの再構築が完了しました。${embedded}/${filesToEmbed.length}件をインデックスしました。`;
     console.log(`[EmbeddingStore] ${msg}`);
-    new Notice(msg);
+    this.notify.info(msg);
     return embedded;
   }
 
@@ -266,10 +246,9 @@ export class EmbeddingStore {
     }
   }
 
-  public onSettingsChanged(): void {
-    this.settings = this.plugin.settings;
-    this.initializeClient();
-    console.log('[EmbeddingStore] Settings changed, client re-initialized.');
+  public onSettingsChanged(enableSemanticSearch: boolean): void {
+    this.enableSemanticSearch = enableSemanticSearch;
+    console.log('[EmbeddingStore] Settings changed.');
   }
 
   public getEntryCount(): number {

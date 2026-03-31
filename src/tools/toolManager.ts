@@ -3,6 +3,7 @@ import { StructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import ObsidianMemoria from "../../main";
 import { ConversationReflectionTool } from "./conversationReflectionTool";
+import { ReflectionEngine } from "../core/reflectionEngine";
 import { TodoTool } from "./todoTool";
 import { VaultSearchTool } from "./vaultSearchTool";
 import { SemanticSearchTool } from "./semanticSearchTool";
@@ -18,9 +19,11 @@ export class ToolManager {
   private availableTools: StructuredTool<AnyZodObject>[];
   private toolMap: Map<string, StructuredTool<AnyZodObject>>;
   private nativeTools: GoogleSearchTool[];
+  private reflectionEngine: ReflectionEngine;
 
-  constructor(plugin: ObsidianMemoria) {
+  constructor(plugin: ObsidianMemoria, reflectionEngine: ReflectionEngine) {
     this.plugin = plugin;
+    this.reflectionEngine = reflectionEngine;
     this.availableTools = [];
     this.toolMap = new Map();
     this.nativeTools = [];
@@ -28,7 +31,7 @@ export class ToolManager {
   }
 
   private initializeTools(): void {
-    const conversationReflectionTool = new ConversationReflectionTool(this.plugin);
+    const conversationReflectionTool = new ConversationReflectionTool(this.reflectionEngine);
     const todoTool = new TodoTool(this.plugin);
     const vaultSearchTool = new VaultSearchTool(this.plugin);
 

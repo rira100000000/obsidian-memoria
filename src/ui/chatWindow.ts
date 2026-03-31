@@ -14,8 +14,9 @@ import {
   AIMessageChunk,
 } from "@langchain/core/messages";
 
-import { TagProfiler } from '../tagProfiler';
-import { ContextRetriever } from '../contextRetriever';
+import { TagProfiler } from '../core/tagProfiler';
+import { ContextRetriever } from '../core/contextRetriever';
+import { fromLangChain, toLangChain } from '../utils/messageConverter';
 import { LocationFetcher } from '../locationFetcher';
 import { ChatLogger } from '../chatLogger';
 import { ChatUIManager } from './chatUIManager';
@@ -23,7 +24,8 @@ import { ChatSessionManager } from '../chatSessionManager';
 import { PromptFormatter } from '../promptFormatter';
 import { ChatContextBuilder } from '../chatContextBuilder';
 import { ToolManager } from '../tools/toolManager';
-import { ProcessingCallbacks } from '../types';
+import { ProcessingCallbacks } from '../core/types';
+import { FileLogger } from '../utils/fileLogger';
 
 export const CHAT_VIEW_TYPE = 'obsidian-memoria-chat-view';
 
@@ -40,6 +42,7 @@ export class ChatView extends ItemView {
   private contextRetriever: ContextRetriever;
   private locationFetcher: LocationFetcher;
   private chatLogger!: ChatLogger;
+  private fileLogger: FileLogger;
 
   private llmRoleName: string;
   private tagProfiler: TagProfiler;
@@ -53,9 +56,10 @@ export class ChatView extends ItemView {
     this.viewInstanceId = Math.random().toString(36).substring(2, 8);
     console.log(`[ChatView][${this.viewInstanceId}] Constructor called. Initial RoleName: ${this.llmRoleName}`);
 
-    this.tagProfiler = new TagProfiler(this.plugin);
-    this.contextRetriever = new ContextRetriever(this.plugin, this.plugin.embeddingStore);
+    this.tagProfiler = new TagProfiler(this.plugin.storage, this.plugin.llmAdapter, this.settings, this.plugin.notify);
+    this.contextRetriever = new ContextRetriever(this.plugin.storage, this.settings, this.plugin.embeddingStore);
     this.locationFetcher = plugin.locationFetcher;
+    this.fileLogger = plugin.fileLogger;
     this.promptFormatter = new PromptFormatter(this.settings);
     this.chatContextBuilder = new ChatContextBuilder(
         this.contextRetriever,
@@ -121,8 +125,8 @@ export class ChatView extends ItemView {
     }
     
     this.initializeChatModel();
-    this.tagProfiler.onSettingsChanged();
-    this.contextRetriever.onSettingsChanged();
+    this.tagProfiler.onSettingsChanged(this.settings);
+    this.contextRetriever.onSettingsChanged(this.settings, this.plugin.embeddingStore);
     this.chatContextBuilder.onSettingsChanged(this.settings);
     if (this.toolManager) this.toolManager.onSettingsChanged();
     if (this.uiManager) this.uiManager.setDebugMode(this.settings.enableDebugLog ?? false);
@@ -145,8 +149,8 @@ export class ChatView extends ItemView {
 
     this.promptFormatter.updateSettings(this.settings);
     this.chatContextBuilder.onSettingsChanged(this.settings);
-    this.contextRetriever.onSettingsChanged();
-    this.tagProfiler.onSettingsChanged();
+    this.contextRetriever.onSettingsChanged(this.settings, this.plugin.embeddingStore);
+    this.tagProfiler.onSettingsChanged(this.settings);
     this.toolManager.onSettingsChanged();
 
     this.uiManager = new ChatUIManager(
@@ -161,6 +165,10 @@ export class ChatView extends ItemView {
     this.plugin.debugLog = (category: string, message: string, data?: string) => {
       this.uiManager.addDebugLogEntry(category, message, data);
     };
+    // NotificationAdapterにもデバッグコールバックを接続
+    this.plugin.notify.setDebugCallback((category, message, data) => {
+      this.uiManager.addDebugLogEntry(category, message, data);
+    });
 
     this.chatSessionManager = new ChatSessionManager(
         this.app,
@@ -168,10 +176,14 @@ export class ChatView extends ItemView {
         this.uiManager,
         this.chatLogger,
         this.tagProfiler,
-        this.llmRoleName
+        this.llmRoleName,
+        this.plugin.reflectionEngine
     );
 
-    await this.initializeChatModel(); 
+    await this.initializeChatModel();
+
+    // FileLoggerの新しいセッションを開始
+    this.fileLogger.startSession().catch(e => console.error('[ChatView] FileLogger session start failed:', e.message));
 
     this.uiManager.appendModelMessage(`チャットウィンドウへようこそ！ ${this.llmRoleName}がお話しします。\nShift+Enterでメッセージを送信します。`);
 
@@ -185,6 +197,7 @@ export class ChatView extends ItemView {
 
   async onClose() {
     console.log(`[ChatView][${this.viewInstanceId}] onClose called.`);
+    await this.fileLogger.close();
   }
 
   private updateTitle() {
@@ -215,6 +228,9 @@ export class ChatView extends ItemView {
     // デバッグログにセパレーターを追加
     this.uiManager.addDebugLogSeparator(userInputText);
     this.uiManager.addDebugLogEntry('送信', `ユーザーメッセージ: ${userInputText}`);
+
+    // FileLoggerにターン開始を記録
+    this.fileLogger.logTurnStart(userInputText);
 
     // ステータスインジケーターを表示
     this.uiManager.showStatus('準備しています...');
@@ -253,7 +269,7 @@ export class ChatView extends ItemView {
         const llmContext = await this.chatContextBuilder.prepareContextForLlm(
             userInputText,
             this.llmRoleName,
-            currentMessages,
+            fromLangChain(currentMessages),
             isFirstActualUserMessage,
             this.chatSessionManager.narrativeBuffer,
             callbacks
@@ -279,7 +295,7 @@ export class ChatView extends ItemView {
         // ワーキングメモリ（直近Nターン）のみをLLMに渡す（ナラティブ要約で古いターンはカバー）
         const messagesForLlm: BaseMessage[] = [
             new SystemMessage(systemPromptStr),
-            ...llmContext.working_memory_messages
+            ...toLangChain(llmContext.working_memory_messages)
         ];
 
         callbacks.onDebugLog?.('コンテキスト', `システムプロンプト長: ${systemPromptStr.length}文字`);
@@ -287,6 +303,17 @@ export class ChatView extends ItemView {
         if (llmContext.narrative_summary) {
           callbacks.onDebugLog?.('コンテキスト', `ナラティブ要約: ${llmContext.narrative_summary.substring(0, 100)}...`);
         }
+
+        // FileLoggerにコンテキストとシステムプロンプトを記録
+        this.fileLogger.logContextRetrieval(llmContext.retrieved_context_string, llmContext.narrative_summary || '');
+        this.fileLogger.logSystemPrompt(systemPromptStr);
+        this.fileLogger.logMessagesForLlm(
+          messagesForLlm.map(msg => ({
+            role: msg._getType(),
+            content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+          }))
+        );
+
         this.uiManager.showStatus('応答を生成しています...');
         
         const toolsOption = this.toolManager.getLangchainTools();
@@ -357,9 +384,15 @@ export class ChatView extends ItemView {
 
             messagesForLlm.push(aiResponse);
             
+            // FileLoggerにストリーミングレスポンスを記録
+            this.fileLogger.logStreamingResponse(
+              combinedContentFromStream,
+              aiResponse.response_metadata ? { response_metadata: aiResponse.response_metadata, additional_kwargs: aiResponse.additional_kwargs } : undefined
+            );
+
             if (!aiResponse.tool_calls || aiResponse.tool_calls.length === 0) {
                 console.log(`[ChatView][${this.viewInstanceId}] No tool calls from LLM. Final response:`, aiResponse.content);
-                break; 
+                break;
             }
 
             const currentToolCallsFromLlm = aiResponse.tool_calls;
@@ -406,10 +439,11 @@ export class ChatView extends ItemView {
                         toolMessages.push(new ToolMessage({
                             tool_call_id: toolCallId,
                             name: toolName,
-                            content: result 
+                            content: result
                         }));
                         console.log(`[ChatView][${this.viewInstanceId}] Tool ${toolName} executed. Result:`, result);
                         callbacks.onDebugLog?.('ツール結果', `${toolName} 完了`, String(result).substring(0, 500));
+                        this.fileLogger.logToolCall(toolName, toolArgs, String(result));
 
                     } catch (toolError: any) {
                         console.error(`[ChatView][${this.viewInstanceId}] Error executing tool ${toolName}:`, toolError);

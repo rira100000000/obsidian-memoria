@@ -1,32 +1,48 @@
-// src/contextRetriever.ts
-import { App, TFile, parseYaml, Notice, moment } from 'obsidian';
-import ObsidianMemoria from '../main';
-import { GeminiPluginSettings } from './settings';
+// src/core/contextRetriever.ts
+import { parse as parseYaml } from 'yaml';
+import { StorageAdapter } from './interfaces/storageAdapter';
+import { GeminiPluginSettings } from '../settings';
 import { TagProfilingNoteFrontmatter, SummaryNoteFrontmatter, RetrievedContextItem, RetrievedContext, ProcessingCallbacks } from './types';
 import { EmbeddingStore } from './embeddingStore';
 
 const TPN_DIR = 'TagProfilingNote';
 const SN_DIR = 'SummaryNote';
 
+/** "YYYY-MM-DD HH:mm:ss" 形式の文字列をDateに変換 */
+function parseDateStr(dateStr: string): Date | null {
+  // "YYYY-MM-DD HH:mm:ss" or "YYYY-MM-DD HH:MM"
+  const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return null;
+  const [, y, m, d, h, min, s] = match;
+  const date = new Date(+y, +m - 1, +d, +h, +min, +(s || 0));
+  return isNaN(date.getTime()) ? null : date;
+}
+
+/** Date を "YYYY-MM-DD HH:MM" 形式にフォーマット */
+function formatDateShort(date: Date): string {
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 // Export interfaces used by other modules
 export type { RetrievedContextItem, RetrievedContext };
 
 export class ContextRetriever {
-  private app: App;
-  private plugin: ObsidianMemoria;
+  private storage: StorageAdapter;
   private settings: GeminiPluginSettings;
   private embeddingStore: EmbeddingStore | null = null;
 
-  constructor(plugin: ObsidianMemoria, embeddingStore?: EmbeddingStore) {
-    this.plugin = plugin;
-    this.app = plugin.app;
-    this.settings = plugin.settings;
-    this.embeddingStore = embeddingStore || plugin.embeddingStore || null;
+  constructor(storage: StorageAdapter, settings: GeminiPluginSettings, embeddingStore?: EmbeddingStore | null) {
+    this.storage = storage;
+    this.settings = settings;
+    this.embeddingStore = embeddingStore || null;
   }
 
-  public onSettingsChanged() {
-    this.settings = this.plugin.settings;
-    this.embeddingStore = this.plugin.embeddingStore || null;
+  public onSettingsChanged(settings: GeminiPluginSettings, embeddingStore?: EmbeddingStore | null) {
+    this.settings = settings;
+    if (embeddingStore !== undefined) {
+      this.embeddingStore = embeddingStore || null;
+    }
     console.log('[ContextRetriever] Settings changed.');
   }
 
@@ -203,7 +219,7 @@ export class ContextRetriever {
       sourceType: 'SN',
       sourceName: baseName,
       title: frontmatter.title,
-      date: frontmatter.date ? moment(frontmatter.date, "YYYY-MM-DD HH:mm:ss").format("YYYY-MM-DD HH:MM") : undefined,
+      date: frontmatter.date ? (parseDateStr(frontmatter.date) ? formatDateShort(parseDateStr(frontmatter.date)!) : undefined) : undefined,
       contentSnippet: snippet.trim() || "関連情報なし",
       relevance: similarity * 100,
     };
@@ -237,7 +253,7 @@ export class ContextRetriever {
         sourceType: 'SN' as const,
         sourceName: snFileName,
         title: frontmatter.title,
-        date: frontmatter.date ? moment(frontmatter.date, "YYYY-MM-DD HH:mm:ss").format("YYYY-MM-DD HH:MM") : undefined,
+        date: frontmatter.date ? (parseDateStr(frontmatter.date) ? formatDateShort(parseDateStr(frontmatter.date)!) : undefined) : undefined,
         contentSnippet: snippet.trim() || "関連情報なし",
       };
     }));
@@ -251,17 +267,18 @@ export class ContextRetriever {
    * 日時文字列から現在までの経過時間を人間が読める形式で返す。
    */
   private formatTimeAgo(dateStr: string): string {
-    const then = moment(dateStr, ["YYYY-MM-DD HH:mm:ss", "YYYY-MM-DD HH:MM"]);
-    if (!then.isValid()) return '';
-    const now = moment();
-    const diffMinutes = now.diff(then, 'minutes');
+    const then = parseDateStr(dateStr);
+    if (!then) return '';
+    const now = new Date();
+    const diffMs = now.getTime() - then.getTime();
+    const diffMinutes = Math.floor(diffMs / 60000);
     if (diffMinutes < 1) return 'たった今';
     if (diffMinutes < 60) return `${diffMinutes}分前`;
-    const diffHours = now.diff(then, 'hours');
+    const diffHours = Math.floor(diffMs / 3600000);
     if (diffHours < 24) return `${diffHours}時間前`;
-    const diffDays = now.diff(then, 'days');
+    const diffDays = Math.floor(diffMs / 86400000);
     if (diffDays < 30) return `${diffDays}日前`;
-    const diffMonths = now.diff(then, 'months');
+    const diffMonths = Math.floor(diffDays / 30);
     return `${diffMonths}ヶ月前`;
   }
 
@@ -302,11 +319,9 @@ export class ContextRetriever {
 
   private async getFileContent(filePath: string): Promise<string | null> {
     try {
-      const file = this.app.vault.getAbstractFileByPath(filePath);
-      if (file instanceof TFile) {
-        return await this.app.vault.cachedRead(file);
-      }
-      return null;
+      const exists = await this.storage.exists(filePath);
+      if (!exists) return null;
+      return await this.storage.read(filePath);
     } catch (error: any) {
       console.error(`[ContextRetriever] Error reading file ${filePath}:`, error.message);
       return null;

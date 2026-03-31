@@ -2,7 +2,7 @@
 import { requestUrl, Notice, moment } from 'obsidian';
 import ObsidianMemoria from '../main';
 import { GeminiPluginSettings } from './settings';
-import { IpLocationInfo, WeatherInfo, CurrentContextualInfo } from './types';
+import { IpLocationInfo, WeatherInfo, CurrentContextualInfo } from './core/types';
 
 const IP_API_URL = 'http://ip-api.com/json/?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query';
 const OPEN_METEO_API_URL = 'https://api.open-meteo.com/v1/forecast';

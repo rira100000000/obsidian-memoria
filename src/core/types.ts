@@ -1,6 +1,14 @@
 // src/types.ts
 
 /**
+ * コア内部で使用するメッセージ型。LangChainの BaseMessage に依存しない。
+ */
+export interface MemoriaMessage {
+  role: 'human' | 'ai' | 'system' | 'tool';
+  content: string;
+}
+
+/**
  * tag_scores.json の各タグエントリの型定義
  */
 export interface TagScoreEntry {

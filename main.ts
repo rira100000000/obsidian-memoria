@@ -3,14 +3,28 @@ import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
 import { GeminiPluginSettings, DEFAULT_SETTINGS, MemoriaSettingTab } from './src/settings';
 import { CHAT_VIEW_TYPE, ChatView } from './src/ui/chatWindow';
 import { LocationFetcher } from './src/locationFetcher';
-import { ToolManager } from './src/tools/toolManager'; // ToolManagerをインポート
-import { EmbeddingStore } from './src/embeddingStore';
+import { ToolManager } from './src/tools/toolManager';
+import { EmbeddingStore } from './src/core/embeddingStore';
+import { StorageAdapter } from './src/core/interfaces/storageAdapter';
+import { ObsidianStorageAdapter } from './src/adapters/obsidianStorageAdapter';
+import { GeminiLLMAdapter } from './src/adapters/geminiLLMAdapter';
+import { LLMAdapter } from './src/core/interfaces/llmAdapter';
+import { ObsidianNotificationAdapter } from './src/adapters/obsidianNotificationAdapter';
+import { NotificationAdapter } from './src/core/interfaces/notificationAdapter';
+import { ReflectionEngine } from './src/core/reflectionEngine';
+import { TagProfiler } from './src/core/tagProfiler';
+import { FileLogger } from './src/utils/fileLogger';
 
 export default class ObsidianMemoria extends Plugin {
   settings: GeminiPluginSettings;
   locationFetcher: LocationFetcher;
-  toolManager: ToolManager; // ToolManagerのインスタンスを保持
-  embeddingStore: EmbeddingStore; // EmbeddingStoreのインスタンスを保持
+  toolManager: ToolManager;
+  embeddingStore: EmbeddingStore;
+  storage: StorageAdapter;
+  llmAdapter: LLMAdapter;
+  notify: ObsidianNotificationAdapter;
+  reflectionEngine: ReflectionEngine;
+  fileLogger: FileLogger;
 
   /** デバッグログをUIに送るためのコールバック（ChatViewが設定する） */
   debugLog?: (category: string, message: string, data?: string) => void;
@@ -20,13 +34,33 @@ export default class ObsidianMemoria extends Plugin {
 
     await this.loadSettings();
 
+    // StorageAdapterを初期化
+    this.storage = new ObsidianStorageAdapter(this.app);
+    // FileLoggerを初期化
+    this.fileLogger = new FileLogger(this.storage);
+    this.fileLogger.setEnabled(this.settings.enableDebugLog ?? false);
+    // NotificationAdapterを初期化
+    this.notify = new ObsidianNotificationAdapter();
+    // LLMAdapterを初期化
+    this.llmAdapter = new GeminiLLMAdapter({
+      apiKey: this.settings.geminiApiKey,
+      mainModel: this.settings.geminiModel,
+      lightModel: this.settings.keywordExtractionModel || this.settings.geminiModel,
+    });
+    // LLMAdapterにFileLoggerを接続
+    if (this.llmAdapter instanceof GeminiLLMAdapter) {
+      (this.llmAdapter as GeminiLLMAdapter).setFileLogger(this.fileLogger);
+    }
     // LocationFetcherを初期化
     this.locationFetcher = new LocationFetcher(this);
     // EmbeddingStoreを初期化
-    this.embeddingStore = new EmbeddingStore(this);
+    this.embeddingStore = new EmbeddingStore(this.storage, this.llmAdapter, this.settings.enableSemanticSearch, this.notify);
     await this.embeddingStore.initialize();
+    // ReflectionEngineを初期化（ToolManagerとChatSessionManagerで共有）
+    const tagProfiler = new TagProfiler(this.storage, this.llmAdapter, this.settings, this.notify);
+    this.reflectionEngine = new ReflectionEngine(this.storage, this.llmAdapter, this.notify, tagProfiler, this.embeddingStore, this.settings);
     // ToolManagerを初期化
-    this.toolManager = new ToolManager(this);
+    this.toolManager = new ToolManager(this, this.reflectionEngine);
 
     // チャットビューを登録
     // ChatViewのコンストラクタにプラグインインスタンス (this) を渡す
@@ -94,8 +128,19 @@ export default class ObsidianMemoria extends Plugin {
     if (this.locationFetcher && typeof this.locationFetcher.onSettingsChanged === 'function') {
       this.locationFetcher.onSettingsChanged(this.settings);
     }
+    // LLMAdapterを再初期化
+    if (this.llmAdapter && this.llmAdapter instanceof GeminiLLMAdapter) {
+      (this.llmAdapter as GeminiLLMAdapter).updateConfig({
+        apiKey: this.settings.geminiApiKey,
+        mainModel: this.settings.geminiModel,
+        lightModel: this.settings.keywordExtractionModel || this.settings.geminiModel,
+      });
+    }
+    if (this.fileLogger) {
+      this.fileLogger.setEnabled(this.settings.enableDebugLog ?? false);
+    }
     if (this.embeddingStore && typeof this.embeddingStore.onSettingsChanged === 'function') {
-      this.embeddingStore.onSettingsChanged();
+      this.embeddingStore.onSettingsChanged(this.settings.enableSemanticSearch);
     }
     if (this.toolManager && typeof this.toolManager.onSettingsChanged === 'function') {
       this.toolManager.onSettingsChanged(); // ToolManagerにも設定変更を通知

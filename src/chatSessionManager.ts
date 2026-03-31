@@ -1,13 +1,16 @@
 // src/chatSessionManager.ts
-import { App, Notice, TFile } from 'obsidian';
+import { App, Notice } from 'obsidian';
 import { InMemoryChatMessageHistory } from "@langchain/core/chat_history";
 import { BaseMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
+import { fromLangChain } from './utils/messageConverter';
 import { ChatUIManager, ConfirmationModal } from './ui/chatUIManager';
 import { ChatLogger } from './chatLogger';
-import { TagProfiler } from './tagProfiler';
+import { TagProfiler } from './core/tagProfiler';
 import ObsidianMemoria from './../main';
 import { ConversationReflectionTool } from './tools/conversationReflectionTool';
-import { NarrativeBuffer } from './narrativeBuffer';
+import { ReflectionEngine } from './core/reflectionEngine';
+import { NarrativeBuffer } from './core/narrativeBuffer';
+import { FileLogger } from './utils/fileLogger';
 
 export class ChatSessionManager {
     private app: App;
@@ -19,6 +22,7 @@ export class ChatSessionManager {
     private llmRoleName: string;
     private managerInstanceId: string;
     private reflectionTool: ConversationReflectionTool;
+    private reflectionEngine: ReflectionEngine;
     public narrativeBuffer: NarrativeBuffer;
     private isResetting = false;
 
@@ -28,7 +32,8 @@ export class ChatSessionManager {
         uiManager: ChatUIManager,
         chatLogger: ChatLogger,
         tagProfiler: TagProfiler,
-        initialLlmRoleName: string
+        initialLlmRoleName: string,
+        reflectionEngine: ReflectionEngine
     ) {
         this.app = app;
         this.plugin = plugin;
@@ -39,8 +44,9 @@ export class ChatSessionManager {
         this.messageHistory = new InMemoryChatMessageHistory();
         this.managerInstanceId = Math.random().toString(36).substring(2, 8);
         console.log(`[ChatSessionManager][${this.managerInstanceId}] New instance created. Initial RoleName: ${initialLlmRoleName}. Using ChatLogger ID: ${(this.chatLogger as any).instanceId}`);
-        this.reflectionTool = new ConversationReflectionTool(this.plugin);
-        this.narrativeBuffer = new NarrativeBuffer(this.plugin.settings);
+        this.reflectionEngine = reflectionEngine;
+        this.reflectionTool = new ConversationReflectionTool(reflectionEngine);
+        this.narrativeBuffer = new NarrativeBuffer(this.plugin.llmAdapter);
     }
 
     public updateLlmRoleName(newRoleName: string): void {
@@ -76,9 +82,10 @@ export class ChatSessionManager {
 
         try {
             // 振り返り処理をバックグラウンドで実行（UIリセットをブロックしない）
-            const alreadyReflected = this.reflectionTool.getLastCreatedFile() !== null;
+            const lastResult = this.reflectionEngine.getLastResult();
+            const alreadyReflected = lastResult !== null && lastResult.success;
             if (alreadyReflected) {
-                this.uiManager.addDebugLogEntry('振り返り', `会話中にAIが振り返りノートを作成済み（${this.reflectionTool.getLastCreatedFile()?.basename}）。再生成をスキップ`);
+                this.uiManager.addDebugLogEntry('振り返り', `会話中にAIが振り返りノートを作成済み（${lastResult!.baseName}）。再生成をスキップ`);
             } else if (!skipSummaryAndReflection && previousLogPath && previousMessages.length > 1) {
                 this.uiManager.addDebugLogEntry('振り返り', `振り返りノート生成をバックグラウンドで開始 (メッセージ数: ${previousMessages.length})`);
 
@@ -89,17 +96,20 @@ export class ChatSessionManager {
                     previousMessages,
                     previousLlmRoleName,
                     logPathForReflection.split('/').pop() || "unknown-log.md"
-                ).then(async (reflectionNoteFile) => {
-                    if (reflectionNoteFile instanceof TFile) {
-                        this.uiManager.addDebugLogEntry('振り返り', `振り返りノート作成完了: ${reflectionNoteFile.basename}`);
-                        new Notice(`振り返りノートが作成されました: ${reflectionNoteFile.basename}`);
+                ).then(async (resultPathOrError) => {
+                    if (typeof resultPathOrError === 'string' && !resultPathOrError.startsWith("エラー:")) {
+                        // resultPathOrError はファイルパス
+                        const fileName = resultPathOrError.replace(/^.*\//, '');
+                        const baseName = fileName.replace(/\.md$/, '');
+                        this.uiManager.addDebugLogEntry('振り返り', `振り返りノート作成完了: ${baseName}`);
+                        new Notice(`振り返りノートが作成されました: ${baseName}`);
                         await chatLoggerForReflection.updateLogFileFrontmatter(logPathForReflection, {
-                            title: reflectionNoteFile.basename.replace(/\.md$/, '').replace(/^SN-\d{12}-/, ''),
-                            summary_note: `[[${reflectionNoteFile.name}]]`
+                            title: baseName.replace(/^SN-\d{12}-/, ''),
+                            summary_note: `[[${fileName}]]`
                         });
-                    } else if (typeof reflectionNoteFile === 'string' && reflectionNoteFile.startsWith("エラー:")) {
-                        this.uiManager.addDebugLogEntry('振り返り', `振り返りエラー: ${reflectionNoteFile}`);
-                        new Notice(reflectionNoteFile);
+                    } else if (typeof resultPathOrError === 'string' && resultPathOrError.startsWith("エラー:")) {
+                        this.uiManager.addDebugLogEntry('振り返り', `振り返りエラー: ${resultPathOrError}`);
+                        new Notice(resultPathOrError);
                     }
                 }).catch((error: any) => {
                     console.error(`[ChatSessionManager] Background reflection failed:`, error);
@@ -117,7 +127,10 @@ export class ChatSessionManager {
             this.chatLogger.resetLogFile();
             this.messageHistory = new InMemoryChatMessageHistory();
             this.narrativeBuffer.reset();
-            this.reflectionTool.clearLastCreatedFile();
+            this.reflectionEngine.clearLastResult();
+
+            // FileLoggerの新しいセッションを開始
+            this.plugin.fileLogger.startSession().catch(e => console.error('[ChatSessionManager] FileLogger session start failed:', e.message));
 
             this.uiManager.clearMessages();
             this.uiManager.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');
@@ -181,7 +194,7 @@ export class ChatSessionManager {
     public async addMessage(message: BaseMessage): Promise<void> {
         await this.messageHistory.addMessage(message);
         const allMessages = await this.messageHistory.getMessages();
-        this.narrativeBuffer.onMessagesUpdated(allMessages).catch(e => {
+        this.narrativeBuffer.onMessagesUpdated(fromLangChain(allMessages)).catch(e => {
             console.error("[ChatSessionManager] Background narrative buffer update failed:", e.message);
         });
     }
@@ -189,7 +202,7 @@ export class ChatSessionManager {
     public async addUserMessage(textContent: string): Promise<void> {
         await this.messageHistory.addMessage(new HumanMessage(textContent));
         const allMessages = await this.messageHistory.getMessages();
-        this.narrativeBuffer.onMessagesUpdated(allMessages).catch(e => {
+        this.narrativeBuffer.onMessagesUpdated(fromLangChain(allMessages)).catch(e => {
             console.error("[ChatSessionManager] Background narrative buffer update failed:", e.message);
         });
     }
@@ -197,7 +210,7 @@ export class ChatSessionManager {
     public async addAiMessage(textContent: string): Promise<void> {
         await this.messageHistory.addMessage(new AIMessage(textContent));
         const allMessages = await this.messageHistory.getMessages();
-        this.narrativeBuffer.onMessagesUpdated(allMessages).catch(e => {
+        this.narrativeBuffer.onMessagesUpdated(fromLangChain(allMessages)).catch(e => {
             console.error("[ChatSessionManager] Background narrative buffer update failed:", e.message);
         });
     }

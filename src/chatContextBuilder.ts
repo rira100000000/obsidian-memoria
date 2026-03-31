@@ -1,12 +1,11 @@
 // src/chatContextBuilder.ts
 import { moment } from 'obsidian';
-import { ContextRetriever, RetrievedContext } from './contextRetriever';
+import { ContextRetriever, RetrievedContext } from './core/contextRetriever';
 import { LocationFetcher } from './locationFetcher';
-import { CurrentContextualInfo, ProcessingCallbacks } from './types';
-import { BaseMessage } from "@langchain/core/messages";
+import { CurrentContextualInfo, ProcessingCallbacks, MemoriaMessage } from './core/types';
 import { GeminiPluginSettings } from './settings';
-import { ContextLayout, DEFAULT_LAYOUT, calculateBudget, fitWithinBudget } from './contextLayout';
-import { NarrativeBuffer } from './narrativeBuffer';
+import { ContextLayout, DEFAULT_LAYOUT, calculateBudget, fitWithinBudget } from './core/contextLayout';
+import { NarrativeBuffer } from './core/narrativeBuffer';
 
 /**
  * LLMに渡すためのコンテキスト情報をまとめたインターフェース
@@ -18,7 +17,7 @@ export interface LlmContextInput {
   current_time: string;
   current_location_string: string;
   current_weather_string: string;
-  working_memory_messages: BaseMessage[];
+  working_memory_messages: MemoriaMessage[];
 }
 
 /**
@@ -42,34 +41,18 @@ export class ChatContextBuilder {
     this.layout = DEFAULT_LAYOUT;
   }
 
-  /**
-   * 設定が変更された場合に呼び出され、内部の設定を更新します。
-   * @param newSettings 新しいプラグイン設定。
-   */
   public onSettingsChanged(newSettings: GeminiPluginSettings): void {
     this.settings = newSettings;
-    // ContextRetriever や LocationFetcher も設定に依存している場合、
-    // それらの onSettingsChanged も呼び出すか、ここで再初期化が必要になることがあります。
-    // 今回は、ChatView 側で各モジュールの onSettingsChanged が呼ばれる想定なので、ここでは settings の更新のみ。
   }
 
-  /**
-   * LLMへの入力に必要なコンテキスト情報を収集・整形して返します。
-   * @param userInput 現在のユーザー入力。
-   * @param llmRoleName LLMのロール名。
-   * @param chatHistory 現在のチャット履歴。
-   * @param isFirstActualUserMessage これが最初の実際のユーザーメッセージかどうか。
-   * @returns {Promise<LlmContextInput>} LLMの入力として使われるコンテキスト情報。
-   */
   public async prepareContextForLlm(
     userInput: string,
     llmRoleName: string,
-    chatHistory: BaseMessage[],
+    chatHistory: MemoriaMessage[],
     isFirstActualUserMessage: boolean,
     narrativeBuffer?: NarrativeBuffer,
     callbacks?: ProcessingCallbacks
   ): Promise<LlmContextInput> {
-    // レイアウトに基づくバジェットの計算
     const totalBudget = this.settings.maxContextLength || 100000;
     const budget = calculateBudget(totalBudget, this.layout);
 
@@ -89,9 +72,8 @@ export class ChatContextBuilder {
       console.error('[ChatContextBuilder] Error retrieving context:', contextError.message, contextError.stack);
     }
 
-    // ナラティブバッファからの情報取得
     let narrativeSummary = '';
-    let workingMemoryMessages: BaseMessage[] = chatHistory;
+    let workingMemoryMessages: MemoriaMessage[] = chatHistory;
 
     if (narrativeBuffer) {
       narrativeSummary = narrativeBuffer.getNarrativeSummary();
