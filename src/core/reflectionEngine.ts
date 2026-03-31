@@ -16,6 +16,7 @@ interface ReflectionLLMResponse {
   keyTakeaways: string[];
   actionItems: string[];
   reflectionBody: string;
+  semanticDefinitions?: Array<{ tag: string; definition: string }>;
 }
 
 export interface ConversationMessage {
@@ -181,6 +182,10 @@ export class ReflectionEngine {
       const finalTags = Array.from(new Set([llmRoleNameToUse, ...extractedContentTags, ...(parsedResponse.tags || [])]));
       this.notify.debug('振り返り', `タイトル: ${parsedResponse.conversationTitle}  タグ: ${finalTags.join(', ')}  気分: ${parsedResponse.mood || 'N/A'}`);
 
+      const semanticDefs = parsedResponse.semanticDefinitions?.filter(
+        d => d.tag && d.definition && d.definition.trim() !== ''
+      ) || [];
+
       const frontmatter: SummaryNoteFrontmatter = {
         title: parsedResponse.conversationTitle,
         date: this.formatTimestamp('datetime'),
@@ -191,6 +196,7 @@ export class ReflectionEngine {
         mood: parsedResponse.mood || 'Neutral',
         key_takeaways: parsedResponse.keyTakeaways || [],
         action_items: parsedResponse.actionItems || [],
+        ...(semanticDefs.length > 0 ? { semantic_definitions: semanticDefs } : {}),
       };
 
       const fileContent = `---\n${stringifyYaml(frontmatter)}---\n\n# ${parsedResponse.conversationTitle} (by ${llmRoleNameToUse})\n\n${reflectionBodyContent}\n`;
@@ -261,7 +267,14 @@ ${formattedHistory}
     "User: （ユーザーが行うべき具体的なアクションがあれば記述。なければ空文字列または省略）",
     "${llmRoleName}: （${llmRoleName}自身が行うべき具体的なアクションがあれば記述。なければ空文字列または省略）"
   ],
-  "reflectionBody": "以下のMarkdownフォーマットに従って、会話の振り返りを記述してください。\\n## その日の会話のテーマ\\n\\n\\n## 特に印象に残った発言\\n\\n\\n## 新しい発見や気づき\\n\\n\\n## 感情の変化\\n\\n\\n## 今後の課題や目標\\n\\n\\n## 自由形式での感想\\n"
+  "reflectionBody": "以下のMarkdownフォーマットに従って、会話の振り返りを記述してください。\\n## その日の会話のテーマ\\n\\n\\n## 特に印象に残った発言\\n\\n\\n## 新しい発見や気づき\\n\\n\\n## 感情の変化\\n\\n\\n## 今後の課題や目標\\n\\n\\n## 自由形式での感想\\n",
+  "semanticDefinitions": [
+    // 会話の中でユーザーが何かの概念や固有名詞を定義・説明した箇所があれば抽出する。
+    // 例: ユーザーが「obsidian-memoriaっていうのは俺が作ってるObsidianプラグインで、記憶を永続化するチャットAIなんだ」と言った場合:
+    // { "tag": "obsidian-memoria", "definition": "ユーザーが開発しているObsidianプラグイン。記憶を永続化するチャットAI" }
+    // ユーザーが何も定義・説明していなければ空配列 [] で構いません。
+    // AIの発言や一般知識ではなく、ユーザーが実際に説明した内容のみを対象にしてください。
+  ]
 }
 \`\`\`
 JSONオブジェクトのみを返し、他のテキストは含めないでください。

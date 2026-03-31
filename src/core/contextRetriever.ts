@@ -166,20 +166,28 @@ export class ContextRetriever {
 
     const tagName = frontmatter.tag_name || filePath.replace(/^.*TPN-/, '').replace(/\.md$/, '');
     let snippet = "";
-    if (frontmatter.master_significance) snippet += `このタグ「${tagName}」の全体的な重要性: ${frontmatter.master_significance}\n`;
+
+    // 意味記憶（定義）を抽出
+    const semanticMatch = fileContent.match(/## What it is（意味記憶）\s*([\s\S]*?)(?=\n## |$)/);
+    if (semanticMatch && semanticMatch[1]?.trim()) {
+      snippet += `[定義] ${semanticMatch[1].trim()}\n`;
+    }
+
+    // エピソード記憶を抽出
+    if (frontmatter.master_significance) snippet += `[あなたとの関わり] ${frontmatter.master_significance}\n`;
     if (frontmatter.key_themes && frontmatter.key_themes.length > 0) snippet += `関連キーテーマ: ${frontmatter.key_themes.join(', ')}\n`;
 
-    const overviewMatch = fileContent.match(/## 概要\s*([\s\S]*?)(?=\n## |$)/);
+    const overviewMatch = fileContent.match(/### 概要\s*([\s\S]*?)(?=\n### |$)/);
     if (overviewMatch && overviewMatch[1]?.trim()) {
-      snippet += `\n## 概要\n${overviewMatch[1].trim()}\n`;
+      snippet += `\n### 概要\n${overviewMatch[1].trim()}\n`;
     }
-    const contextsMatch = fileContent.match(/## これまでの主な文脈\s*([\s\S]*?)(?=\n## |$)/);
+    const contextsMatch = fileContent.match(/### これまでの主な文脈\s*([\s\S]*?)(?=\n### |$)/);
     if (contextsMatch && contextsMatch[1]?.trim()) {
-      snippet += `\n## これまでの主な文脈\n${contextsMatch[1].trim()}\n`;
+      snippet += `\n### これまでの主な文脈\n${contextsMatch[1].trim()}\n`;
     }
-    const opinionsMatch = fileContent.match(/## ユーザーの意見・反応\s*([\s\S]*?)(?=\n## |$)/);
+    const opinionsMatch = fileContent.match(/### ユーザーの意見・反応\s*([\s\S]*?)(?=\n### |$)/);
     if (opinionsMatch && opinionsMatch[1]?.trim()) {
-      snippet += `\n## ユーザーの意見・反応\n${opinionsMatch[1].trim()}\n`;
+      snippet += `\n### ユーザーの意見・反応\n${opinionsMatch[1].trim()}\n`;
     }
 
     const baseName = filePath.replace(/^.*\//, '').replace(/\.md$/, '');
@@ -291,9 +299,14 @@ export class ContextRetriever {
     for (const item of sortedItems) {
       const timeAgo = item.date ? this.formatTimeAgo(item.date) : '';
       const timeLabel = timeAgo ? ` [${timeAgo}の会話]` : '';
-      contextString += `\n[参照元: ${item.sourceType} - ${item.sourceName} (${item.date || '日付不明'})${timeLabel}]\n`;
-      if (item.title) contextString += `タイトル: ${item.title}\n`;
-      contextString += `内容抜粋:\n${item.contentSnippet}\n---\n`;
+      if (item.sourceType === 'TPN') {
+        const tagLabel = item.title?.replace('タグプロファイル: ', '') || item.sourceName;
+        contextString += `\n【${tagLabel} について】\n`;
+      } else {
+        contextString += `\n[参照元: ${item.sourceType} - ${item.sourceName} (${item.date || '日付不明'})${timeLabel}]\n`;
+        if (item.title) contextString += `タイトル: ${item.title}\n`;
+      }
+      contextString += `${item.contentSnippet}\n---\n`;
     }
 
     const maxLength = 1000000;

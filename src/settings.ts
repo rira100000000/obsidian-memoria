@@ -36,8 +36,8 @@ export const DEFAULT_SETTINGS: GeminiPluginSettings = {
 例:
 「ハル。Obsidianの中で暮らしているAI。マスターの友達。」`,
   keywordExtractionModel: 'gemini-1.5-flash-latest',
-  maxContextLength: 3500,
-  maxContextLengthForEvaluation: 3500,
+  maxContextLength: 100000,
+  maxContextLengthForEvaluation: 100000,
   maxTagsToRetrieve: 5,
   showLocationInChat: false,
   showWeatherInChat: false,

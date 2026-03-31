@@ -129,8 +129,8 @@ export class ChatSessionManager {
             this.narrativeBuffer.reset();
             this.reflectionEngine.clearLastResult();
 
-            // FileLoggerの新しいセッションを開始
-            this.plugin.fileLogger.startSession().catch(e => console.error('[ChatSessionManager] FileLogger session start failed:', e.message));
+            // FileLoggerの現在のセッションを閉じる（次のメッセージ送信時に新セッションが開始される）
+            this.plugin.fileLogger.close().catch(e => console.error('[ChatSessionManager] FileLogger close failed:', e.message));
 
             this.uiManager.clearMessages();
             this.uiManager.appendModelMessage('チャットウィンドウへようこそ！\nShift+Enterでメッセージを送信します。');

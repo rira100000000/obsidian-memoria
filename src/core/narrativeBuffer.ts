@@ -15,7 +15,7 @@ export class NarrativeBuffer {
   private lastSummarizedMessageCount: number = 0;
   private isSummarizing: boolean = false;
 
-  constructor(llm: LLMAdapter, workingMemorySize: number = 3) {
+  constructor(llm: LLMAdapter, workingMemorySize: number = 10) {
     this.llm = llm;
     this.workingMemorySize = workingMemorySize;
   }
@@ -79,7 +79,8 @@ ${newConversationText}
 - 重要な事実、決定事項、ユーザーの好みや意見を必ず保持すること
 - 不要な詳細は省略し、簡潔にまとめること
 - 時系列の流れが分かるようにすること
-- 200文字以内を目安にすること`
+- 1000文字以内を目安にすること
+- 会話中に作成された具体的な成果物（歌詞、コード、文章など）の内容もできるだけ保持すること`
       : `以下は会話AIと人間の対話の要約タスクです。
 
 会話内容:
@@ -88,7 +89,8 @@ ${newConversationText}
 上記の会話内容を簡潔に要約してください。
 - 重要な事実、決定事項、ユーザーの好みや意見を中心にまとめること
 - 不要な詳細は省略すること
-- 200文字以内を目安にすること`;
+- 1000文字以内を目安にすること
+- 会話中に作成された具体的な成果物（歌詞、コード、文章など）の内容もできるだけ保持すること`;
 
     try {
       if (this.llm instanceof GeminiLLMAdapter) {

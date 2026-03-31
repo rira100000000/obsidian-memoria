@@ -52,6 +52,10 @@ export class FileLogger {
     return this.enabled;
   }
 
+  public hasSession(): boolean {
+    return this.sessionFilePath !== null;
+  }
+
   // --- ログメソッド ---
 
   /**
@@ -216,5 +220,6 @@ export class FileLogger {
       this.flushTimer = null;
     }
     await this.flush();
+    this.sessionFilePath = null;
   }
 }

@@ -182,9 +182,6 @@ export class ChatView extends ItemView {
 
     await this.initializeChatModel();
 
-    // FileLoggerの新しいセッションを開始
-    this.fileLogger.startSession().catch(e => console.error('[ChatView] FileLogger session start failed:', e.message));
-
     this.uiManager.appendModelMessage(`チャットウィンドウへようこそ！ ${this.llmRoleName}がお話しします。\nShift+Enterでメッセージを送信します。`);
 
     if (!this.chatModel) {
@@ -229,7 +226,10 @@ export class ChatView extends ItemView {
     this.uiManager.addDebugLogSeparator(userInputText);
     this.uiManager.addDebugLogEntry('送信', `ユーザーメッセージ: ${userInputText}`);
 
-    // FileLoggerにターン開始を記録
+    // FileLoggerのセッションが未開始なら開始（最初のメッセージ送信時に遅延開始）
+    if (this.fileLogger.isEnabled() && !this.fileLogger.hasSession()) {
+      await this.fileLogger.startSession();
+    }
     this.fileLogger.logTurnStart(userInputText);
 
     // ステータスインジケーターを表示

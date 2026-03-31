@@ -44,6 +44,10 @@ export interface TagProfilingNoteFrontmatter {
   summary_notes?: string[]; // このタグが登場したSummaryノートへのリンク (最新のものから順に) "[[SN-YYYYMMDDHHMM-Topic1]]"
   last_mentioned_in?: string; // 最後にこのタグが言及された会話 (tag_scores.json とも連携)
   mention_frequency?: number; // このタグの言及回数 (概算, tag_scores.json とも連携)
+  memory_type?: {
+    semantic: boolean;  // 意味記憶セクションが存在するか
+    episodic: boolean;  // エピソード記憶セクションが存在するか
+  };
 }
 
 /**
@@ -58,6 +62,7 @@ export interface ParsedLlmTpnData {
   master_significance: string;
   related_tags: string[];
   // created_date, updated_date, type, summary_notes, last_mentioned_in, mention_frequency は別途処理
+  body_semantic: string; // 「What it is（意味記憶）」セクションの内容
   body_overview: string; // 「概要」セクションの本文
   body_contexts: Array<{ summary_note_link: string; context_summary: string }>; // 「これまでの主な文脈」セクションの各項目
   body_user_opinions: Array<{ summary_note_link: string; user_opinion: string }>; // 「ユーザーの意見・反応」セクションの各項目
@@ -78,7 +83,10 @@ export interface SummaryNoteFrontmatter {
   mood?: string;
   key_takeaways?: string[];
   action_items?: string[];
-  // 他にもsummaryGenerator.tsで定義されているフィールドがある想定
+  semantic_definitions?: Array<{
+    tag: string;
+    definition: string;
+  }>;
 }
 
 // --- ContextRetriever で使用する型定義 ---
