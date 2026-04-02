@@ -64,7 +64,8 @@ export class ChatView extends ItemView {
     this.chatContextBuilder = new ChatContextBuilder(
         this.contextRetriever,
         this.locationFetcher,
-        this.settings
+        this.settings,
+        this.plugin.storage
     );
     this.toolManager = plugin.toolManager;
   }
@@ -291,6 +292,7 @@ export class ChatView extends ItemView {
             .replace('{current_weather_string}', llmContext.current_weather_string)
             .replace('{retrieved_context_string}', llmContext.retrieved_context_string)
             .replace('{narrative_summary}', llmContext.narrative_summary || 'まだ要約はありません（会話開始直後）')
+            .replace('{behavior_principles}', llmContext.behavior_principles)
             .replace('{input}', userInputText);
 
         // ワーキングメモリ（直近Nターン）のみをLLMに渡す（ナラティブ要約で古いターンはカバー）
@@ -399,7 +401,12 @@ export class ChatView extends ItemView {
             const currentToolCallsFromLlm = aiResponse.tool_calls;
             console.log(`[ChatView][${this.viewInstanceId}] LLM requested tool calls:`, currentToolCallsFromLlm);
             callbacks.onDebugLog?.('ツール呼び出し', `LLMがツールを要求: ${currentToolCallsFromLlm.map(tc => tc.name).join(', ')}`);
-            
+
+            // ツール呼び出し前のAIテキストがあればFullLogに記録
+            if (combinedContentFromStream.trim()) {
+                await this.chatLogger.appendLogEntry(`**${this.llmRoleName}**: ${combinedContentFromStream}\n`);
+            }
+
             // ツール実行前: AIが発したテキスト（「調べてみるね」等）があれば残す
             if (currentMessageDisplayElement && currentMessageDisplayElement.parentNode) {
                 const streamedText = currentMessageDisplayElement.textContent?.trim();

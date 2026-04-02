@@ -6,6 +6,7 @@ import { CurrentContextualInfo, ProcessingCallbacks, MemoriaMessage } from './co
 import { GeminiPluginSettings } from './settings';
 import { ContextLayout, DEFAULT_LAYOUT, calculateBudget, fitWithinBudget } from './core/contextLayout';
 import { NarrativeBuffer } from './core/narrativeBuffer';
+import { BehaviorPrincipleTool } from './tools/behaviorPrincipleTool';
 
 /**
  * LLMに渡すためのコンテキスト情報をまとめたインターフェース
@@ -18,6 +19,7 @@ export interface LlmContextInput {
   current_location_string: string;
   current_weather_string: string;
   working_memory_messages: MemoriaMessage[];
+  behavior_principles: string;
 }
 
 /**
@@ -29,14 +31,17 @@ export class ChatContextBuilder {
   private locationFetcher: LocationFetcher;
   private settings: GeminiPluginSettings;
   private layout: ContextLayout;
+  private storage: { exists(path: string): Promise<boolean>; read(path: string): Promise<string> };
 
   constructor(
     contextRetriever: ContextRetriever,
     locationFetcher: LocationFetcher,
-    settings: GeminiPluginSettings
+    settings: GeminiPluginSettings,
+    storage: { exists(path: string): Promise<boolean>; read(path: string): Promise<string> }
   ) {
     this.contextRetriever = contextRetriever;
     this.locationFetcher = locationFetcher;
+    this.storage = storage;
     this.settings = settings;
     this.layout = DEFAULT_LAYOUT;
   }
@@ -122,6 +127,9 @@ export class ChatContextBuilder {
       budget.system_prompt
     );
 
+    // 行動原則を読み込み
+    const behaviorPrinciples = await BehaviorPrincipleTool.loadPrinciplesText(this.storage);
+
     return {
       character_setting_prompt: characterSettingPrompt,
       retrieved_context_string: retrievedContextString,
@@ -130,6 +138,7 @@ export class ChatContextBuilder {
       current_location_string: currentLocationString,
       current_weather_string: currentWeatherString,
       working_memory_messages: workingMemoryMessages,
+      behavior_principles: behaviorPrinciples || 'まだ原則は定められていない。',
     };
   }
 }

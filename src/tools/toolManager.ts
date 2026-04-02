@@ -8,6 +8,7 @@ import { TodoTool } from "./todoTool";
 import { VaultSearchTool } from "./vaultSearchTool";
 import { SemanticSearchTool } from "./semanticSearchTool";
 import { WebFetchTool } from "./webSearchTool";
+import { BehaviorPrincipleTool } from "./behaviorPrincipleTool";
 // TSchema が ZodObject を拡張することを保証するジェネリック型制約
 type AnyZodObject = z.ZodObject<any, any, any, any>;
 
@@ -38,6 +39,9 @@ export class ToolManager {
     this.registerTool(conversationReflectionTool);
     this.registerTool(todoTool);
     this.registerTool(vaultSearchTool);
+
+    const behaviorPrincipleTool = new BehaviorPrincipleTool(this.plugin);
+    this.registerTool(behaviorPrincipleTool);
 
     if (this.plugin.settings.enableWebSearch) {
       // Geminiネイティブのgoogle_searchツール
