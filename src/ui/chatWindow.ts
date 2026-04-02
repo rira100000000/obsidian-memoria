@@ -219,7 +219,6 @@ export class ChatView extends ItemView {
 
     await this.chatSessionManager.addUserMessage(userInputText);
     this.uiManager.appendUserMessage(userInputText);
-    await this.chatLogger.appendLogEntry(`**User**: ${userInputText}\n`);
     this.uiManager.resetInputField();
 
     // デバッグログにセパレーターを追加
@@ -265,6 +264,8 @@ export class ChatView extends ItemView {
                 return;
             }
         }
+        // ログファイル準備完了後にユーザーメッセージを記録
+        await this.chatLogger.appendLogEntry(`**User**: ${userInputText}\n`);
 
         const llmContext = await this.chatContextBuilder.prepareContextForLlm(
             userInputText,

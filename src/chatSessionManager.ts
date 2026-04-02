@@ -114,6 +114,7 @@ export class ChatSessionManager {
                 }).catch((error: any) => {
                     console.error(`[ChatSessionManager] Background reflection failed:`, error);
                     this.uiManager.addDebugLogEntry('振り返り', `バックグラウンド振り返りエラー: ${error.message}`);
+                    new Notice(`振り返りノート生成エラー: ${error.message}`, 0);
                 });
             } else {
                 let reason = '';
